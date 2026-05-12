@@ -1287,23 +1287,7 @@ function doLogin() {
   var btnLogin = document.querySelector('.login-btn');
   if (btnLogin) { btnLogin.textContent = 'Memverifikasi...'; btnLogin.disabled = true; }
 
-  var params = { action: 'loginUser', username: username, password: password };
-  var url = API_URL + '?' + Object.keys(params).map(function(k){
-    return encodeURIComponent(k) + '=' + encodeURIComponent(params[k]);
-  }).join('&');
-
-  var done = false;
-  var timer = setTimeout(function(){
-    if (done) return; done = true;
-    if (btnLogin) { btnLogin.textContent = 'Masuk →'; btnLogin.disabled = false; }
-    errEl.textContent = 'Koneksi timeout. Periksa jaringan lalu coba lagi.';
-    errEl.style.display = 'block';
-  }, 15000);
-
-  fetch(url)
-    .then(function(r){ return r.json(); })
-    .then(function(res){
-      if (done) return; done = true; clearTimeout(timer);
+  apiGet({ action: 'loginUser', username: username, password: password }, function(res) {
       if (btnLogin) { btnLogin.textContent = 'Masuk →'; btnLogin.disabled = false; }
       if (res.status === 'ok' && res.user) {
         var u = res.user;
@@ -1316,13 +1300,7 @@ function doLogin() {
         errEl.style.display = 'block';
         document.getElementById('login-password').value = '';
       }
-    })
-    .catch(function(){
-      if (done) return; done = true; clearTimeout(timer);
-      if (btnLogin) { btnLogin.textContent = 'Masuk →'; btnLogin.disabled = false; }
-      errEl.textContent = 'Gagal terhubung ke server. Periksa koneksi internet.';
-      errEl.style.display = 'block';
-    });
+  });
 }
 
 // Enter key untuk login
@@ -1763,9 +1741,8 @@ window.onload = function(){
     // Belum login — tampilkan login screen, jangan muat data
     document.getElementById('login-screen').style.display = 'flex';
   }
-  if (!API_URL || API_URL === 'PASTE_URL_APPS_SCRIPT_DISINI') {
-    document.getElementById('list-gardu').innerHTML = '<div class="alert alert-warn">⚠️ Isi variabel API_URL di index.html</div>';
-  }
+  // API_URL sudah kosong — digantikan supabase-api.js (tidak perlu validasi)
+  // if (!API_URL || ...) { ... }
   var elManual = document.getElementById('scanner-manual');
   if (elManual) elManual.addEventListener('keydown', function(e){ if(e.key==='Enter') cariGarduDariScanner(); });
   var elModal = document.getElementById('scanner-modal');
@@ -1817,10 +1794,20 @@ function normalizeCoord(val, isLat) {
 }
 
 function apiGet(params, cb) {
-  // Didelegasikan ke window.apiGet yang di-override supabase-api.js
-  // Fallback stub jika supabase-api.js belum dimuat
-  if (window._sbApiReady) { window._sbApiGet(params, cb); return; }
-  cb({status:'error', message:'API layer belum siap. Coba refresh halaman.'});
+  // Delegasikan ke window.apiGet yang di-override oleh supabase-api.js
+  // supabase-api.js harus dimuat sebelum </body>
+  if (typeof window.apiGet === 'function' && window.apiGet !== apiGet) {
+    window.apiGet(params, cb); return;
+  }
+  // Fallback: supabase-api.js belum siap, tunda 300ms lalu coba lagi (maks 5x)
+  if (!apiGet._retries) apiGet._retries = 0;
+  if (apiGet._retries < 5) {
+    apiGet._retries++;
+    setTimeout(function(){ apiGet._retries = 0; apiGet(params, cb); }, 300);
+    return;
+  }
+  apiGet._retries = 0;
+  cb({status:'error', message:'Gagal terhubung ke server. Coba refresh halaman.'});
 }
 
 var TAB_IDS = ['tab-daftar','tab-rekap','tab-sop'];
@@ -4688,5 +4675,8 @@ document.addEventListener('DOMContentLoaded', function() {
 
 
 </script>
+
+<!-- Supabase API Layer — harus dimuat SETELAH script utama -->
+<script src="supabase-api.js"></script>
 </body>
 </html>

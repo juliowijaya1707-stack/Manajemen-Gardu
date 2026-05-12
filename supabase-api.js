@@ -96,6 +96,15 @@ async function _dispatch(action, p, signal) {
     case 'getDaftarUser':    return _getDaftarUser(p, signal);
     case 'hapusUser':        return _hapusUser(p, signal);
     case 'cariGardu':        return _cariGardu(p, signal);
+    // Actions yang tidak butuh server (local/session only)
+    case 'logoutUser':       return _logoutUser(p, signal);
+    case 'getRiwayat':       return _getRiwayat(p, signal);
+    case 'getRekapGardu':    return _getRekapGardu(p, signal);
+    case 'tambahUser':       return _tambahUser(p, signal);
+    case 'editUser':         return _editUser(p, signal);
+    case 'gantiPassword':    return _gantiPassword(p, signal);
+    case 'verifyULPPin':     return _verifyULPPin(p, signal);
+    case 'toggleStatus':     return _toggleStatus(p, signal);
     default: return { status:'error', message:'Action tidak dikenali: '+action };
   }
 }
@@ -703,13 +712,163 @@ function _mapInspeksiRow(r) {
   return flat;
 }
 
+
+
+// ── LOGOUT ───────────────────────────────────────────────────
+async function _logoutUser(p, signal) {
+  // Supabase tidak ada session server — cukup hapus token di client
+  // Token di localStorage/sessionStorage dibersihkan oleh index.html
+  return { status:'ok', message:'Logout berhasil.' };
+}
+
+// ── RIWAYAT INSPEKSI (alias getDetailLengkap.riwayat) ────────
+async function _getRiwayat(p, signal) {
+  var noGardu = (p.noGardu || '').trim().toUpperCase();
+  var res = await sbFetch(
+    '/rest/v1/inspeksi?no_gardu=eq.' + encodeURIComponent(noGardu) +
+    '&order=tgl_ukur.desc,jam_ukur.desc&limit=50',
+    { signal: signal }
+  );
+  if (!res.ok) return { status:'error', message:'Gagal memuat riwayat inspeksi.' };
+  var rows = await res.json();
+  return { status:'ok', data: rows.map(_mapInspeksiRow) };
+}
+
+// ── REKAP GARDU (tabel rekap sederhana, bukan dashboard) ─────
+async function _getRekapGardu(p, signal) {
+  var url = '/rest/v1/gardu?select=no_gardu,ulp,unitup,penyulang,status_operasional,status_kepemilikan,tipe,kapasitas_kva&order=ulp.asc,no_gardu.asc';
+  if (p && p.ulp) url += '&ulp=eq.' + encodeURIComponent(p.ulp);
+  var res = await sbFetch(url, { signal:signal });
+  if (!res.ok) return { status:'error', message:'Gagal memuat rekap gardu.' };
+  var rows = await res.json();
+  var data = rows.map(function(g){
+    return {
+      noGardu:    g.no_gardu || '',
+      ulp:        g.ulp || '',
+      unitup:     g.unitup || '',
+      penyulang:  g.penyulang || '',
+      statusOp:   g.status_operasional || '',
+      kepemilikan:g.status_kepemilikan || '',
+      tipe:       g.tipe || '',
+      daya:       g.kapasitas_kva || ''
+    };
+  });
+  return { status:'ok', data:data };
+}
+
+// ── TAMBAH USER ──────────────────────────────────────────────
+async function _tambahUser(p, signal) {
+  var session = await _getUserFromToken(p.token);
+  if (!session || session.role !== 'superadmin')
+    return { status:'error', message:'Akses ditolak.' };
+  var pwHash = await sha256(String(p.password || '').trim());
+  var body = {
+    username:      (p.username||'').trim().toLowerCase(),
+    password_hash: pwHash,
+    nama:          p.nama || '',
+    role:          p.role || 'petugas',
+    ulp:           p.ulp  || null,
+    aktif:         true
+  };
+  var res = await sbFetch('/rest/v1/users', {
+    method:'POST', body:JSON.stringify(body),
+    headers:{'Prefer':'return=minimal'}, signal:signal
+  });
+  if (!res.ok) { var t=await res.text(); return { status:'error', message:'Gagal tambah user. '+t }; }
+  return { status:'ok', message:'User '+body.username+' berhasil ditambahkan.' };
+}
+
+// ── EDIT USER ────────────────────────────────────────────────
+async function _editUser(p, signal) {
+  var session = await _getUserFromToken(p.token);
+  if (!session || session.role !== 'superadmin')
+    return { status:'error', message:'Akses ditolak.' };
+  var body = {};
+  if (p.nama)     body.nama = p.nama;
+  if (p.role)     body.role = p.role;
+  if (p.ulp  !== undefined) body.ulp  = p.ulp || null;
+  if (p.password && String(p.password).trim().length >= 4)
+    body.password_hash = await sha256(String(p.password).trim());
+  var res = await sbFetch('/rest/v1/users?username=eq.'+encodeURIComponent(p.usernameLama||p.username), {
+    method:'PATCH', body:JSON.stringify(body),
+    headers:{'Prefer':'return=minimal'}, signal:signal
+  });
+  if (!res.ok) { var t=await res.text(); return { status:'error', message:'Gagal edit user. '+t }; }
+  return { status:'ok', message:'User berhasil diperbarui.' };
+}
+
+// ── GANTI PASSWORD ───────────────────────────────────────────
+async function _gantiPassword(p, signal) {
+  var session = await _getUserFromToken(p.token);
+  if (!session) return { status:'error', message:'Sesi tidak valid.' };
+  // Verifikasi password lama
+  var oldHash = await sha256(String(p.passwordLama||'').trim());
+  var resChk = await sbFetch(
+    '/rest/v1/users?username=eq.'+encodeURIComponent(session.username)+
+    '&password_hash=eq.'+encodeURIComponent(oldHash)+'&select=id&limit=1',
+    { signal:signal }
+  );
+  if (!resChk.ok) return { status:'error', message:'Gagal verifikasi password.' };
+  var arr = await resChk.json();
+  if (!arr||!arr.length) return { status:'error', message:'Password lama tidak sesuai.' };
+  var newHash = await sha256(String(p.passwordBaru||'').trim());
+  var resPatch = await sbFetch('/rest/v1/users?username=eq.'+encodeURIComponent(session.username), {
+    method:'PATCH', body:JSON.stringify({ password_hash: newHash }),
+    headers:{'Prefer':'return=minimal'}, signal:signal
+  });
+  if (!resPatch.ok) return { status:'error', message:'Gagal menyimpan password baru.' };
+  return { status:'ok', message:'Password berhasil diubah.' };
+}
+
+// ── VERIFY ULP PIN ───────────────────────────────────────────
+async function _verifyULPPin(p, signal) {
+  // Di Supabase: PIN diverifikasi via pin_hash di tabel users
+  // Cari user dengan ULP yang cocok dan pin_hash yang cocok
+  var pinHash = await sha256(String(p.pin||'').trim());
+  var ulpTarget = (p.ulp||'').trim().toUpperCase();
+  // Cari user dengan pin ini (bisa superadmin atau admin ULP)
+  var res = await sbFetch(
+    '/rest/v1/users?pin_hash=eq.'+encodeURIComponent(pinHash)+
+    '&select=role,ulp&limit=5',
+    { signal:signal }
+  );
+  if (!res.ok) return { status:'error', message:'Gagal verifikasi PIN.' };
+  var arr = await res.json();
+  if (!arr||!arr.length) return { status:'error', message:'PIN salah.' };
+  for (var i=0; i<arr.length; i++) {
+    var u = arr[i];
+    if (u.role === 'superadmin') return { status:'ok', role:'admin', ulp:'' };
+    var uUlp = (u.ulp||'').trim().toUpperCase();
+    if (uUlp === ulpTarget || uUlp === 'ULP '+ulpTarget || ('ULP '+uUlp) === ulpTarget)
+      return { status:'ok', role:'ulp', ulp:uUlp };
+  }
+  return { status:'error', message:'PIN tidak sesuai dengan ULP '+ulpTarget+'.' };
+}
+
+// ── TOGGLE STATUS GARDU ──────────────────────────────────────
+async function _toggleStatus(p, signal) {
+  var session = await _getUserFromToken(p.token);
+  if (!session) return { status:'error', message:'Sesi tidak valid.' };
+  var res = await sbFetch('/rest/v1/gardu?no_gardu=eq.'+encodeURIComponent(p.noGardu), {
+    method:'PATCH',
+    body: JSON.stringify({ status_operasional: (p.status||'AKTIF').toUpperCase() }),
+    headers:{'Prefer':'return=minimal'}, signal:signal
+  });
+  if (!res.ok) return { status:'error', message:'Gagal mengubah status gardu.' };
+  return { status:'ok', message:'Status gardu berhasil diubah.' };
+}
+
 // ── Override apiGet global ────────────────────────────────────
 // Patch fungsi apiGet yang dipakai di index.html agar pakai Supabase
+var _origApiGet = window.apiGet; // simpan jika sudah ada
 window.apiGet = function(params, cb) {
   var action = params.action || '';
   var p = Object.assign({}, params);
   delete p.action;
   apiCall(action, p, cb);
 };
+
+// Flag agar index.html tahu layer sudah siap
+window._sbApiReady = true;
 
 console.log('[Supabase API] Layer aktif. URL:', SUPABASE_URL);
