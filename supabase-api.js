@@ -150,7 +150,7 @@ async function _verifyToken(p, signal) {
 // ── DAFTAR GARDU (dengan info inspeksi terakhir) ─────────────
 async function _getDaftarGardu(p, signal) {
   // Gunakan view v_gardu_lengkap — sudah include last inspeksi
-  var url = '/rest/v1/v_gardu_lengkap?select=*&order=no_gardu.asc';
+  var url = '/rest/v1/v_gardu_lengkap?select=*&order=no_gardu.asc&limit=5000';
   if (p && p.ulp) url += '&ulp=eq.' + encodeURIComponent(p.ulp);
   var res = await sbFetch(url, { signal: signal });
   if (!res.ok) return { status:'error', message:'Gagal memuat daftar gardu ('+res.status+')' };
@@ -249,7 +249,7 @@ async function _getRekap(p, signal) {
 
   // Hitung sudahInspeksi: gardu yang punya >= 1 inspeksi
   var resInsp = await sbFetch(
-    '/rest/v1/inspeksi?select=no_gardu&order=no_gardu.asc',
+    '/rest/v1/inspeksi?select=no_gardu&limit=10000',
     { signal: signal }
   );
   var inspRows = resInsp.ok ? await resInsp.json() : [];
@@ -269,7 +269,7 @@ async function _getRekap(p, signal) {
 
   // Hitung overdue: gardu yang last inspeksi > 90 hari atau belum pernah
   var resLastInsp = await sbFetch(
-    '/rest/v1/v_gardu_lengkap?select=no_gardu,last_inspeksi_tgl',
+    '/rest/v1/v_gardu_lengkap?select=no_gardu,last_inspeksi_tgl&limit=5000',
     { signal: signal }
   );
   var lastInspRows = resLastInsp.ok ? await resLastInsp.json() : [];
@@ -286,7 +286,7 @@ async function _getRekap(p, signal) {
 
   // Rekap beban
   var resBeban = await sbFetch(
-    '/rest/v1/inspeksi?select=no_gardu,prosen&order=no_gardu.asc,tgl_ukur.desc',
+    '/rest/v1/inspeksi?select=no_gardu,prosen&order=no_gardu.asc,tgl_ukur.desc&limit=10000',
     { signal: signal }
   );
   var bebanRows = resBeban.ok ? await resBeban.json() : [];
@@ -421,19 +421,18 @@ async function _getExportRekap(p, signal) {
 
 // ── VERIFY PIN ───────────────────────────────────────────────
 async function _verifyPin(p, signal) {
-  // Verifikasi PIN user: cek pin_hash di tabel users
+  // Verifikasi PIN via RPC fn_verify_pin — SECURITY DEFINER, bypass RLS
   var pinHash = await sha256(String(p.pin || '').trim());
   var session = await _getUserFromToken(p.token);
   if (!session) return { status:'error', message:'Sesi tidak valid.' };
 
-  var res = await sbFetch(
-    '/rest/v1/users?username=eq.' + encodeURIComponent(session.username) +
-    '&pin_hash=eq.' + encodeURIComponent(pinHash) + '&select=id&limit=1',
-    { signal: signal }
-  );
+  var res = await sbRpc('fn_verify_pin', {
+    p_username: session.username,
+    p_pin_hash: pinHash
+  }, signal);
   if (!res.ok) return { status:'error', message:'Gagal verifikasi PIN.' };
-  var arr = await res.json();
-  if (!arr || !arr.length) return { status:'error', message:'PIN salah.' };
+  var data = await res.json();
+  if (!data || data.status !== 'ok') return { status:'error', message: data && data.message ? data.message : 'PIN salah.' };
   return { status:'ok', message:'PIN benar.' };
 }
 

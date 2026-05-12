@@ -2076,7 +2076,11 @@ function renderDetailGardu(g, riwayat){
   }
   html += '<div class="grid2" style="margin-bottom:var(--sp-sm);">';
   html += '<div><div class="lbl">Kapasitas</div><div class="val">'+esc(String(kapasitas))+' kVA</div></div>';
-  html += '<div><div class="lbl">Unit / ULP</div><div class="val">'+esc(String(g['UNITUP']||'—'))+' / '+esc(g['ULP']||'—')+'</div></div>';
+  var unitupDisplay = String(g['UNITUP']||'').replace(/\.0$/,'').trim() || '—';
+  var ulpDisplay = (g['ULP']||'').replace(/^ULP\s*/i,'').trim() || '—';
+  // Capitalize: "ABEPURA" → "Abepura"
+  ulpDisplay = ulpDisplay.charAt(0).toUpperCase() + ulpDisplay.slice(1).toLowerCase();
+  html += '<div><div class="lbl">Unit / ULP</div><div class="val">'+esc(unitupDisplay)+' / '+esc(ulpDisplay)+'</div></div>';
   html += '<div><div class="lbl">Penyulang</div><div class="val">'+esc(g['PENYULANG']||'—')+'</div></div>';
   html += '<div><div class="lbl">Tipe</div><div class="val">'+esc(g['TIPE']||'—')+'</div></div>';
   html += '</div>';
