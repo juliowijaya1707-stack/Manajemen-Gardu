@@ -1,0 +1,517 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>QR Generator — PLN UP3 Jayapura</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
+<style>
+*{box-sizing:border-box;margin:0;padding:0;}
+:root{
+  --biru:#0A2D6B;--biru2:#1048A8;--biru-muda:#2E7CF6;--biru-pale:#EEF4FF;
+  --kuning:#F59E0B;--bg:#F5F7FA;--card:#fff;--border:#E2E8F2;
+  --text:#0F1E38;--text2:#3D5580;--text3:#8499BB;
+  --green:#059669;--red:#DC2626;--orange:#D97706;
+  --radius:14px;--shadow:0 2px 12px rgba(10,45,107,.1);
+}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;}
+
+/* ── HEADER ── */
+.header{background:var(--biru);color:#fff;padding:16px 20px;display:flex;align-items:center;gap:12px;box-shadow:0 2px 12px rgba(10,45,107,.35);}
+.header-logo{width:40px;height:40px;background:var(--kuning);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0;}
+.header-title{font-size:17px;font-weight:800;letter-spacing:-.3px;}
+.header-sub{font-size:11px;opacity:.7;margin-top:1px;}
+
+/* ── MAIN LAYOUT ── */
+.main{max-width:960px;margin:0 auto;padding:20px 16px 60px;}
+.section-title{font-size:13px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin:24px 0 10px;}
+
+/* ── CONTROL PANEL ── */
+.card{background:var(--card);border-radius:var(--radius);padding:18px;box-shadow:var(--shadow);margin-bottom:16px;}
+.form-row{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;}
+.form-group{display:flex;flex-direction:column;gap:4px;flex:1;min-width:140px;}
+.form-group label{font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.4px;}
+.form-group input,.form-group select{padding:9px 12px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;color:var(--text);background:#fff;outline:none;transition:border-color .15s;}
+.form-group input:focus,.form-group select:focus{border-color:var(--biru-muda);}
+.btn{padding:9px 18px;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;transition:all .15s;display:inline-flex;align-items:center;gap:6px;}
+.btn-blue{background:var(--biru2);color:#fff;}
+.btn-blue:hover{background:var(--biru);}
+.btn-green{background:var(--green);color:#fff;}
+.btn-green:hover{filter:brightness(1.1);}
+.btn-outline{background:#fff;color:var(--biru2);border:1.5px solid var(--border);}
+.btn-outline:hover{border-color:var(--biru-muda);background:var(--biru-pale);}
+.btn:disabled{opacity:.4;cursor:not-allowed;}
+.api-input{width:100%;padding:9px 12px;border:1.5px solid var(--border);border-radius:8px;font-size:12px;font-family:monospace;color:var(--text);outline:none;}
+.api-input:focus{border-color:var(--biru-muda);}
+
+/* ── STATUS ── */
+.status{padding:8px 12px;border-radius:8px;font-size:12px;font-weight:600;margin-top:10px;display:none;}
+.status.ok{background:var(--green);color:#fff;}
+.status.err{background:var(--red);color:#fff;}
+.status.info{background:var(--biru-pale);color:var(--biru2);}
+
+/* ── FILTER BAR ── */
+.filter-bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px;}
+.filter-bar input{flex:1;min-width:160px;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;outline:none;}
+.filter-bar input:focus{border-color:var(--biru-muda);}
+.filter-bar select{padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;outline:none;background:#fff;}
+.badge{display:inline-flex;align-items:center;gap:3px;padding:3px 8px;border-radius:20px;font-size:10px;font-weight:700;}
+.badge-aktif{background:#DCFCE7;color:#15803D;}
+.badge-nonaktif{background:#FEE2E2;color:#B91C1C;}
+.count-info{font-size:12px;color:var(--text3);font-weight:600;}
+
+/* ── QR GRID ── */
+.qr-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px;}
+.qr-card{background:var(--card);border:1.5px solid var(--border);border-radius:12px;padding:14px;display:flex;flex-direction:column;align-items:center;gap:8px;transition:box-shadow .15s;}
+.qr-card:hover{box-shadow:0 4px 20px rgba(10,45,107,.12);}
+.qr-canvas-wrap{width:140px;height:140px;display:flex;align-items:center;justify-content:center;}
+.qr-info{width:100%;text-align:center;}
+.qr-nogardu{font-family:monospace;font-size:14px;font-weight:800;color:var(--biru2);line-height:1.2;word-break:break-all;}
+.qr-ulp{font-size:10px;color:var(--text3);font-weight:600;text-transform:uppercase;margin-top:2px;}
+.qr-penyulang{font-size:10px;color:var(--text2);margin-top:1px;word-break:break-all;}
+.qr-daya{font-size:10px;color:var(--text3);margin-top:2px;}
+.qr-statusbadge{margin-top:4px;}
+.qr-card-actions{display:flex;gap:6px;margin-top:6px;width:100%;}
+.qr-card-actions .btn{flex:1;padding:6px 8px;font-size:11px;justify-content:center;}
+
+/* ── EMPTY ── */
+.empty{text-align:center;padding:48px 20px;color:var(--text3);}
+.empty-icon{font-size:48px;margin-bottom:8px;}
+.empty-msg{font-size:14px;font-weight:600;}
+.empty-sub{font-size:12px;margin-top:4px;}
+
+/* ── LOADING ── */
+.loading{text-align:center;padding:48px 20px;color:var(--text3);}
+.spinner{width:32px;height:32px;border:3px solid var(--border);border-top-color:var(--biru-muda);border-radius:50%;animation:spin .7s linear infinite;margin:0 auto 12px;}
+@keyframes spin{to{transform:rotate(360deg);}}
+
+/* ── PROGRESS BAR ── */
+.progress-wrap{display:none;margin-top:8px;}
+.progress-bar-bg{background:var(--border);border-radius:20px;height:8px;overflow:hidden;}
+.progress-bar-fill{background:var(--biru-muda);height:100%;border-radius:20px;width:0%;transition:width .2s;}
+.progress-label{font-size:11px;color:var(--text3);margin-top:4px;font-weight:600;}
+
+/* ── PRINT ── */
+@media print{
+  body{background:#fff;}
+  .no-print{display:none!important;}
+  .header{background:var(--biru)!important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+  .qr-grid{grid-template-columns:repeat(3,1fr);gap:10px;}
+  .qr-card{break-inside:avoid;border:1px solid #ccc;border-radius:8px;padding:10px;}
+  .qr-card-actions{display:none;}
+  .main{padding:0;}
+  .section-title,.filter-bar,.count-info{display:none;}
+}
+
+/* ── MODAL SINGLE PRINT ── */
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:999;align-items:center;justify-content:center;padding:20px;}
+.modal-overlay.open{display:flex;}
+.modal-box{background:#fff;border-radius:16px;padding:24px;max-width:360px;width:100%;box-shadow:0 8px 40px rgba(0,0,0,.2);text-align:center;}
+.modal-qr-big{width:200px;height:200px;margin:0 auto 12px;}
+.modal-nogardu{font-family:monospace;font-size:20px;font-weight:900;color:var(--biru2);margin-bottom:4px;}
+.modal-info{font-size:12px;color:var(--text3);margin-bottom:8px;line-height:1.6;}
+.modal-url{font-size:9px;color:var(--text3);word-break:break-all;background:var(--biru-pale);padding:6px 8px;border-radius:6px;margin-bottom:16px;text-align:left;}
+.modal-actions{display:flex;gap:8px;justify-content:center;}
+</style>
+</head>
+<body>
+
+<!-- HEADER -->
+<div class="header">
+  <div class="header-logo">⚡</div>
+  <div>
+    <div class="header-title">QR Generator — Manajemen Gardu</div>
+    <div class="header-sub">PLN UP3 Jayapura · Generate & Print QR Code per Gardu</div>
+  </div>
+</div>
+
+<!-- MAIN -->
+<div class="main">
+
+  <!-- SETUP -->
+  <div class="section-title no-print">⚙️ Konfigurasi</div>
+  <div class="card no-print">
+    <div class="form-row" style="margin-bottom:12px;">
+      <div class="form-group" style="flex:2;min-width:200px;">
+        <label>URL Apps Script (API)</label>
+        <input class="api-input" id="api-url" type="url"
+          placeholder="https://script.google.com/macros/s/.../exec"
+          value="https://script.google.com/macros/s/AKfycbyJUYcYit5cN2aXTsszWXKyuxha4PdJm_AdqL-9lghRsnqN-fCLi-cpKZEnZLX-9eIw/exec">
+      </div>
+      <div class="form-group" style="min-width:200px;">
+        <label>URL Halaman Web App (index.html)</label>
+        <input class="api-input" id="web-url" type="url"
+          placeholder="https://namadomain.com/index.html"
+          value="">
+      </div>
+    </div>
+    <div class="form-row">
+      <button class="btn btn-blue no-print" onclick="muatGardu()">🔄 Muat Data Gardu</button>
+      <button class="btn btn-green no-print" id="btn-print-all" onclick="printSemua()" disabled>🖨️ Print Semua QR</button>
+      <button class="btn btn-outline no-print" id="btn-dl-all" onclick="downloadSemua()" disabled>⬇️ Download ZIP</button>
+    </div>
+    <div class="status" id="status-msg"></div>
+    <div class="progress-wrap" id="progress-wrap">
+      <div class="progress-bar-bg"><div class="progress-bar-fill" id="progress-fill"></div></div>
+      <div class="progress-label" id="progress-label">Menyiapkan...</div>
+    </div>
+  </div>
+
+  <!-- FILTER -->
+  <div class="filter-bar no-print" id="filter-bar" style="display:none;">
+    <input type="text" id="filter-keyword" placeholder="Cari no. gardu, penyulang, alamat..." oninput="applyFilter()">
+    <select id="filter-ulp" onchange="applyFilter()">
+      <option value="">Semua ULP</option>
+    </select>
+    <select id="filter-status" onchange="applyFilter()">
+      <option value="">Semua Status</option>
+      <option value="AKTIF">Aktif</option>
+      <option value="NON-AKTIF">Non-Aktif</option>
+    </select>
+    <span class="count-info" id="count-info"></span>
+  </div>
+
+  <!-- GRID -->
+  <div id="qr-container">
+    <div class="empty">
+      <div class="empty-icon">📡</div>
+      <div class="empty-msg">Belum ada data</div>
+      <div class="empty-sub">Isi URL API & Web App, lalu klik "Muat Data Gardu"</div>
+    </div>
+  </div>
+
+</div>
+
+<!-- MODAL DETAIL QR -->
+<div class="modal-overlay" id="modal-detail" onclick="if(event.target===this)tutupModal()">
+  <div class="modal-box">
+    <div class="modal-qr-big" id="modal-qr-big"></div>
+    <div class="modal-nogardu" id="modal-nogardu">—</div>
+    <div class="modal-info" id="modal-info"></div>
+    <div class="modal-url" id="modal-url"></div>
+    <div class="modal-actions">
+      <button class="btn btn-blue" onclick="printModal()">🖨️ Print</button>
+      <button class="btn btn-green" onclick="downloadModal()">⬇️ Simpan PNG</button>
+      <button class="btn btn-outline" onclick="tutupModal()">Tutup</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ── State ──────────────────────────────────────────────────────
+var allGardu = [];
+var filteredGardu = [];
+var qrInstances = {}; // { noGardu: QRCode instance }
+var modalQR = null;
+var modalGardu = null;
+
+// ── Helpers ────────────────────────────────────────────────────
+function esc(s){ var d=document.createElement('div'); d.textContent=String(s||''); return d.innerHTML; }
+function showStatus(msg, type) {
+  var el = document.getElementById('status-msg');
+  el.textContent = msg;
+  el.className = 'status ' + (type || 'info');
+  el.style.display = 'block';
+}
+function hideStatus() { document.getElementById('status-msg').style.display='none'; }
+
+function buildURL(noGardu) {
+  var webUrl = document.getElementById('web-url').value.trim();
+  if (!webUrl) webUrl = window.location.href.replace('qr-generator.html','index.html');
+  // Pastikan ada ? bukan &
+  var sep = webUrl.indexOf('?') === -1 ? '?' : '&';
+  return webUrl + sep + 'direct=1&noGardu=' + encodeURIComponent(noGardu);
+}
+
+// ── Muat Gardu dari API ────────────────────────────────────────
+function muatGardu() {
+  var apiUrl = document.getElementById('api-url').value.trim();
+  if (!apiUrl) { showStatus('❌ Isi URL API terlebih dahulu.', 'err'); return; }
+
+  showStatus('⏳ Memuat data gardu dari server...', 'info');
+  document.getElementById('qr-container').innerHTML =
+    '<div class="loading"><div class="spinner"></div>Mengambil data dari server...</div>';
+
+  var url = apiUrl + '?action=getDaftarGardu';
+  fetch(url)
+    .then(function(r){ return r.json(); })
+    .then(function(res) {
+      if (res.status !== 'ok' || !res.data) {
+        showStatus('❌ Gagal: ' + (res.message || 'Tidak ada data'), 'err');
+        document.getElementById('qr-container').innerHTML =
+          '<div class="empty"><div class="empty-icon">❌</div><div class="empty-msg">Gagal memuat data</div><div class="empty-sub">'+(res.message||'Periksa URL API')+'</div></div>';
+        return;
+      }
+      allGardu = res.data.filter(function(g){ return String(g['NO_GARDU']||'').trim() !== ''; });
+
+      // Isi filter ULP
+      var ulpSet = {};
+      allGardu.forEach(function(g){ if(g['ULP']) ulpSet[String(g['ULP']).trim()] = true; });
+      var ulpSel = document.getElementById('filter-ulp');
+      ulpSel.innerHTML = '<option value="">Semua ULP</option>' +
+        Object.keys(ulpSet).sort().map(function(u){ return '<option value="'+esc(u)+'">'+esc(u)+'</option>'; }).join('');
+
+      document.getElementById('filter-bar').style.display = 'flex';
+      document.getElementById('btn-print-all').disabled = false;
+      document.getElementById('btn-dl-all').disabled = false;
+
+      showStatus('✅ ' + allGardu.length + ' gardu berhasil dimuat.', 'ok');
+      applyFilter();
+    })
+    .catch(function(err) {
+      showStatus('❌ Gagal terhubung: ' + err.message, 'err');
+      document.getElementById('qr-container').innerHTML =
+        '<div class="empty"><div class="empty-icon">🔌</div><div class="empty-msg">Koneksi gagal</div><div class="empty-sub">Periksa URL API dan koneksi internet</div></div>';
+    });
+}
+
+// ── Filter ────────────────────────────────────────────────────
+function applyFilter() {
+  var kw     = document.getElementById('filter-keyword').value.trim().toUpperCase();
+  var ulp    = document.getElementById('filter-ulp').value.trim().toUpperCase();
+  var status = document.getElementById('filter-status').value.trim().toUpperCase();
+
+  filteredGardu = allGardu.filter(function(g) {
+    var noG = String(g['NO_GARDU']||'').toUpperCase();
+    var ulpG = String(g['ULP']||'').toUpperCase();
+    var penyG = String(g['PENYULANG']||'').toUpperCase();
+    var alamG = String(g['ALAMAT']||'').toUpperCase();
+    var statG = String(g['STATUS_OPERASIONAL']||'').toUpperCase();
+    if (kw && (noG+ulpG+penyG+alamG).indexOf(kw) === -1) return false;
+    if (ulp && ulpG !== ulp) return false;
+    if (status && statG !== status) return false;
+    return true;
+  });
+
+  document.getElementById('count-info').textContent =
+    'Menampilkan ' + filteredGardu.length + ' dari ' + allGardu.length + ' gardu';
+
+  renderGrid(filteredGardu);
+}
+
+// ── Render Grid QR ────────────────────────────────────────────
+function renderGrid(garduList) {
+  qrInstances = {};
+  var container = document.getElementById('qr-container');
+
+  if (!garduList.length) {
+    container.innerHTML = '<div class="empty"><div class="empty-icon">🔍</div><div class="empty-msg">Tidak ada gardu yang sesuai filter</div></div>';
+    return;
+  }
+
+  container.innerHTML = '<div class="qr-grid" id="qr-grid"></div>';
+  var grid = document.getElementById('qr-grid');
+
+  garduList.forEach(function(g) {
+    var noGardu  = String(g['NO_GARDU']||'').trim();
+    var ulp      = String(g['ULP']||'—').trim();
+    var penyulang= String(g['PENYULANG']||'—').trim();
+    var daya     = g['KAPASITAS_KVA'] || g['DAYA_KVA'] || '—';
+    var statusOp = String(g['STATUS_OPERASIONAL']||'AKTIF').trim().toUpperCase();
+    var isAktif  = statusOp === 'AKTIF';
+    var url      = buildURL(noGardu);
+    var safeId   = 'qr_' + noGardu.replace(/[^a-zA-Z0-9]/g,'_');
+
+    var card = document.createElement('div');
+    card.className = 'qr-card';
+    card.innerHTML =
+      '<div class="qr-canvas-wrap"><div id="'+safeId+'"></div></div>'+
+      '<div class="qr-info">'+
+        '<div class="qr-nogardu">'+esc(noGardu)+'</div>'+
+        '<div class="qr-ulp">'+esc(ulp)+'</div>'+
+        '<div class="qr-penyulang">Penyulang: '+esc(penyulang)+'</div>'+
+        '<div class="qr-daya">Kapasitas: '+esc(String(daya))+' kVA</div>'+
+        '<div class="qr-statusbadge"><span class="badge '+(isAktif?'badge-aktif':'badge-nonaktif')+'">'+esc(statusOp)+'</span></div>'+
+      '</div>'+
+      '<div class="qr-card-actions no-print">'+
+        '<button class="btn btn-outline" onclick="lihatDetail(\''+noGardu.replace(/'/g,"\\'")+'\')" title="Lihat QR besar & print">🔍 Detail</button>'+
+        '<button class="btn btn-blue" onclick="downloadSatu(\''+noGardu.replace(/'/g,"\\'")+'\',\''+safeId+'\')" title="Simpan sebagai PNG">⬇️</button>'+
+      '</div>';
+    grid.appendChild(card);
+
+    // Generate QR
+    setTimeout(function(id, u, noG) {
+      return function() {
+        try {
+          var qr = new QRCode(document.getElementById(id), {
+            text: u,
+            width: 140, height: 140,
+            colorDark: '#0A2D6B', colorLight: '#ffffff',
+            correctLevel: QRCode.CorrectLevel.M
+          });
+          qrInstances[noG] = { qr: qr, url: u, safeId: id };
+        } catch(e) { console.warn('QR error', noG, e); }
+      };
+    }(safeId, url, noGardu), 0);
+  });
+}
+
+// ── Lihat Detail (Modal) ───────────────────────────────────────
+function lihatDetail(noGardu) {
+  var g = allGardu.filter(function(x){ return String(x['NO_GARDU']||'').trim() === noGardu; })[0] || {};
+  var url = buildURL(noGardu);
+  modalGardu = noGardu;
+
+  document.getElementById('modal-nogardu').textContent = noGardu;
+  document.getElementById('modal-info').innerHTML =
+    '<b>ULP:</b> '+(g['ULP']||'—')+'<br>'+
+    '<b>Penyulang:</b> '+(g['PENYULANG']||'—')+'<br>'+
+    '<b>Kapasitas:</b> '+(g['KAPASITAS_KVA']||'—')+' kVA<br>'+
+    '<b>Alamat:</b> '+(g['ALAMAT']||'—');
+  document.getElementById('modal-url').textContent = url;
+
+  var bigDiv = document.getElementById('modal-qr-big');
+  bigDiv.innerHTML = '';
+  if (modalQR) { try { modalQR.clear(); } catch(e){} modalQR = null; }
+  setTimeout(function(){
+    try {
+      modalQR = new QRCode(bigDiv, {
+        text: url, width: 200, height: 200,
+        colorDark: '#0A2D6B', colorLight: '#ffffff',
+        correctLevel: QRCode.CorrectLevel.M
+      });
+    } catch(e) {}
+  }, 50);
+
+  document.getElementById('modal-detail').classList.add('open');
+}
+function tutupModal(){ document.getElementById('modal-detail').classList.remove('open'); }
+
+// ── Print Modal (single) ───────────────────────────────────────
+function printModal() {
+  var noGardu = modalGardu;
+  if (!noGardu) return;
+  var g = allGardu.filter(function(x){ return String(x['NO_GARDU']||'').trim() === noGardu; })[0] || {};
+  var url = buildURL(noGardu);
+
+  // Cari canvas dari modal
+  var canvas = document.querySelector('#modal-qr-big canvas');
+  var imgSrc = canvas ? canvas.toDataURL() : '';
+
+  var win = window.open('','_blank','width=400,height=600');
+  win.document.write('<!DOCTYPE html><html><head><title>QR '+noGardu+'</title><style>');
+  win.document.write('body{font-family:Arial,sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;padding:20px;background:#fff;text-align:center;}');
+  win.document.write('.logo{font-size:14px;color:#0A2D6B;font-weight:800;margin-bottom:4px;}');
+  win.document.write('.nogardu{font-family:monospace;font-size:24px;font-weight:900;color:#1048A8;margin:8px 0;}');
+  win.document.write('.info{font-size:12px;color:#3D5580;line-height:1.7;margin-bottom:8px;}');
+  win.document.write('.url{font-size:8px;color:#8499BB;word-break:break-all;background:#EEF4FF;padding:6px;border-radius:4px;margin-top:8px;}');
+  win.document.write('.border-box{border:2px solid #0A2D6B;border-radius:12px;padding:20px 24px;max-width:300px;margin:0 auto;}');
+  win.document.write('@media print{body{margin:0;}@page{size:A6;margin:8mm;}}');
+  win.document.write('</style></head><body>');
+  win.document.write('<div class="border-box">');
+  win.document.write('<div class="logo">⚡ PLN UP3 Jayapura</div>');
+  if (imgSrc) win.document.write('<img src="'+imgSrc+'" width="180" height="180" style="display:block;margin:8px auto;">');
+  win.document.write('<div class="nogardu">'+noGardu+'</div>');
+  win.document.write('<div class="info">ULP: '+(g['ULP']||'—')+'<br>Penyulang: '+(g['PENYULANG']||'—')+'<br>Kapasitas: '+(g['KAPASITAS_KVA']||'—')+' kVA<br>Status: '+(g['STATUS_OPERASIONAL']||'AKTIF')+'</div>');
+  win.document.write('<div class="url">Scan QR untuk melihat detail gardu</div>');
+  win.document.write('</div>');
+  win.document.write('<script>window.onload=function(){window.print();setTimeout(function(){window.close();},1000);}<\/script>');
+  win.document.write('</body></html>');
+  win.document.close();
+}
+
+// ── Download PNG Single ────────────────────────────────────────
+function downloadSatu(noGardu, safeId) {
+  var canvas = document.querySelector('#'+safeId+' canvas');
+  if (!canvas) { alert('QR belum siap, tunggu sebentar.'); return; }
+  var link = document.createElement('a');
+  link.download = 'QR_' + noGardu.replace(/[^a-zA-Z0-9\-]/g,'_') + '.png';
+  link.href = canvas.toDataURL('image/png');
+  link.click();
+}
+
+function downloadModal() {
+  var canvas = document.querySelector('#modal-qr-big canvas');
+  if (!canvas || !modalGardu) { alert('QR belum siap.'); return; }
+  var link = document.createElement('a');
+  link.download = 'QR_' + modalGardu.replace(/[^a-zA-Z0-9\-]/g,'_') + '.png';
+  link.href = canvas.toDataURL('image/png');
+  link.click();
+}
+
+// ── Print Semua ────────────────────────────────────────────────
+function printSemua() {
+  window.print();
+}
+
+// ── Download ZIP (semua QR sekaligus dalam satu file ZIP) ──────
+function downloadSemua() {
+  if (!filteredGardu.length) { alert('Tidak ada QR yang dimuat.'); return; }
+
+  var btnDl = document.getElementById('btn-dl-all');
+  var progressWrap = document.getElementById('progress-wrap');
+  var progressFill = document.getElementById('progress-fill');
+  var progressLabel = document.getElementById('progress-label');
+
+  btnDl.disabled = true;
+  btnDl.textContent = '⏳ Menyiapkan...';
+  progressWrap.style.display = 'block';
+  progressFill.style.width = '10%';
+  progressLabel.textContent = 'Mengumpulkan QR dari halaman...';
+  showStatus('⏳ Mengumpulkan ' + filteredGardu.length + ' QR ke dalam ZIP...', 'info');
+
+  // Tunggu sebentar agar canvas semua sudah ter-render
+  setTimeout(function() {
+    var zip = new JSZip();
+    var folder = zip.folder('QR_Gardu_PLN');
+    var missing = 0;
+    var total = filteredGardu.length;
+
+    filteredGardu.forEach(function(g, i) {
+      var noGardu = String(g['NO_GARDU']||'').trim();
+      var safeId  = 'qr_' + noGardu.replace(/[^a-zA-Z0-9]/g,'_');
+      var canvas  = document.querySelector('#'+safeId+' canvas');
+      if (!canvas) { missing++; return; }
+
+      var dataUrl  = canvas.toDataURL('image/png');
+      var base64   = dataUrl.split(',')[1];
+      var fileName = 'QR_' + noGardu.replace(/[^a-zA-Z0-9\-]/g,'_') + '.png';
+      folder.file(fileName, base64, { base64: true });
+
+      // Update progress saat pengumpulan
+      var pct = Math.round(((i+1)/total) * 50);
+      progressFill.style.width = (10 + pct) + '%';
+      progressLabel.textContent = 'Mengumpulkan ' + (i+1) + ' / ' + total + ' QR...';
+    });
+
+    progressFill.style.width = '65%';
+    progressLabel.textContent = 'Membuat file ZIP...';
+
+    zip.generateAsync({ type: 'blob' }, function(metadata) {
+      var pct = 65 + Math.round(metadata.percent * 0.35);
+      progressFill.style.width = pct + '%';
+      progressLabel.textContent = 'Mengkompresi ZIP... ' + Math.round(metadata.percent) + '%';
+    })
+      .then(function(content) {
+        var tanggal = new Date().toISOString().slice(0,10);
+        saveAs(content, 'QR_Gardu_PLN_UP3_Jayapura_' + tanggal + '.zip');
+        progressFill.style.width = '100%';
+        progressLabel.textContent = '✅ Selesai! ' + (total - missing) + ' QR ter-download.';
+        showStatus('✅ ZIP berhasil! ' + (total - missing) + ' QR diunduh' + (missing ? ' ('+missing+' QR belum siap)' : '') + '.', 'ok');
+        setTimeout(function(){ progressWrap.style.display = 'none'; progressFill.style.width = '0%'; }, 3000);
+      })
+      .catch(function(err) {
+        showStatus('❌ Gagal membuat ZIP: ' + err.message, 'err');
+        progressWrap.style.display = 'none';
+      })
+      .finally(function() {
+        btnDl.disabled = false;
+        btnDl.textContent = '⬇️ Download ZIP';
+      });
+  }, 800);
+}
+
+// ── Auto-detect web URL ───────────────────────────────────────
+window.onload = function() {
+  var webUrlEl = document.getElementById('web-url');
+  if (!webUrlEl.value) {
+    var loc = window.location.href;
+    var guessed = loc.replace('qr-generator.html','index.html').split('?')[0];
+    webUrlEl.value = guessed;
+  }
+};
+</script>
+</body>
+</html>
