@@ -1747,7 +1747,8 @@ window.onload = function(){
       content.appendChild(banner);
     });
 
-    document.getElementById('scanner-manual').addEventListener('keydown', function(e){ if(e.key==='Enter') cariGarduDariScanner(); });
+    var elManual1 = document.getElementById('scanner-manual');
+    if (elManual1) elManual1.addEventListener('keydown', function(e){ if(e.key==='Enter') cariGarduDariScanner(); });
 
     return; // stop — tidak perlu cek session
   }
@@ -1765,8 +1766,10 @@ window.onload = function(){
   if (!API_URL || API_URL === 'PASTE_URL_APPS_SCRIPT_DISINI') {
     document.getElementById('list-gardu').innerHTML = '<div class="alert alert-warn">⚠️ Isi variabel API_URL di index.html</div>';
   }
-  document.getElementById('scanner-manual').addEventListener('keydown', function(e){ if(e.key==='Enter') cariGarduDariScanner(); });
-  document.getElementById('scanner-modal').addEventListener('click', function(e){ if(e.target===this) tutupScanner(); });
+  var elManual = document.getElementById('scanner-manual');
+  if (elManual) elManual.addEventListener('keydown', function(e){ if(e.key==='Enter') cariGarduDariScanner(); });
+  var elModal = document.getElementById('scanner-modal');
+  if (elModal) elModal.addEventListener('click', function(e){ if(e.target===this) tutupScanner(); });
 };
 
 // ── [GPS FIX] Normalisasi koordinat dari Spreadsheet ──────────
