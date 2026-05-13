@@ -1401,26 +1401,28 @@ function normalizeULP(s) {
 function filterGarduByULP(data, ulpFilter) {
   if (!ulpFilter) return data;
 
-  // Cari nilai sheet yang sesuai dengan ULP akun
-  var sheetValue = normalizeULP(ulpAkunToSheet(ulpFilter));
-  // Juga siapkan fallback: coba cocokkan langsung (jika user isi ulp dengan nilai sheet)
-  var directValue = normalizeULP(ulpFilter);
+  // PERBAIKAN: Supabase menyimpan ULP sebagai enum 'ULP ABEPURA' (dengan prefix)
+  // Kita perlu cocokkan berbagai format: 'ABEPURA', 'ULP ABEPURA', dll.
+  var f = String(ulpFilter).trim().toUpperCase();
+  // Normalisasi: strip prefix 'ULP '
+  var fStrip = f.replace(/^ULP\s+/, '');
+  // Dengan prefix
+  var fFull = fStrip.startsWith('ULP ') ? fStrip : 'ULP ' + fStrip;
 
   var result = data.filter(function(g) {
-    var ulpSheet = normalizeULP(g['ULP'] || '');
-    return ulpSheet === sheetValue || ulpSheet === directValue;
+    var ulpData = String(g['ULP'] || '').trim().toUpperCase();
+    var ulpDataStrip = ulpData.replace(/^ULP\s+/, '');
+    // Cocokkan keduanya (dengan dan tanpa prefix)
+    return ulpData === f || ulpData === fFull || ulpDataStrip === fStrip ||
+           ulpDataStrip === f || ulpData === fStrip;
   });
 
-  // Debug log — buka konsol browser (F12) untuk cek
+  // Debug log
   var ulpUnik = {};
-  data.forEach(function(g){ if (g['ULP']) ulpUnik[normalizeULP(g['ULP'])] = true; });
-  console.log('[PLN Filter] Akun ULP: "' + ulpFilter + '" → cari di sheet: "' + sheetValue + '" (fallback: "' + directValue + '")');
-  console.log('[PLN Filter] ULP di data sheet: [' + Object.keys(ulpUnik).map(function(u){return '"'+u+'"';}).join(', ') + ']');
-  console.log('[PLN Filter] Total gardu: ' + data.length + ' → Setelah filter: ' + result.length);
-  if (result.length === 0 && data.length > 0) {
-    console.warn('[PLN Filter] ⚠️ TIDAK ADA yang cocok! Cek ULP_SHEET_MAP di index.html — pastikan nilai sheet[] sesuai dengan kolom ULP di spreadsheet.');
-    console.warn('[PLN Filter] Tip: buka Manajemen Gardu lihat kolom ULP, lalu sesuaikan ULP_SHEET_MAP.');
-  }
+  data.forEach(function(g){ if (g['ULP']) ulpUnik[String(g['ULP']).trim().toUpperCase()] = true; });
+  console.log('[PLN Filter] ULP filter: "' + ulpFilter + '" → strip: "' + fStrip + '" / full: "' + fFull + '"');
+  console.log('[PLN Filter] ULP di data: [' + Object.keys(ulpUnik).join(', ') + ']');
+  console.log('[PLN Filter] ' + data.length + ' → ' + result.length + ' gardu');
   return result;
 }
 
@@ -1450,40 +1452,17 @@ function bukaMenuAdmin() {
 }
 
 function _tampilkanModalPinAdmin(s) {
-  // FIXED: gunakan callback loop agar retry PIN bisa tak terbatas
-  function _cobaPinCallback(pin) {
-    var errEl = document.getElementById('pin-gardu-error');
-    if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
-    // Tampilkan loading di dots
+  mintaPin('PIN Admin — ' + (s.ulp || 'ULP Anda'), function(pin, done) {
     apiGet({ action: 'verifyPin', token: s.token, pin: pin }, function(res) {
       if (res && res.status === 'ok') {
-        tutupModalPinGardu();
+        done({ ok: true });
         _adminUlpVerified = true;
         _tampilkanPanelAdmin(s);
       } else {
-        // PIN salah — reset buffer, tampilkan error, buka kembali modal dengan callback baru
-        var errEl2 = document.getElementById('pin-gardu-error');
-        if (errEl2) {
-          errEl2.textContent = '❌ ' + (res && res.message ? res.message : 'PIN salah. Coba lagi.');
-          errEl2.style.display = 'block';
-        }
-        pinGarduBuffer = '';
-        updatePinGarduDots();
-        // Set ulang callback untuk percobaan berikutnya — modal tetap terbuka
-        _pinGarduCallback = _cobaPinCallback;
+        done({ ok: false, msg: res.message || 'PIN salah.' });
       }
     });
-  }
-
-  pinGarduBuffer = '';
-  _pinGarduCallback = null;
-  var errEl0 = document.getElementById('pin-gardu-error');
-  if (errEl0) { errEl0.style.display = 'none'; errEl0.textContent = ''; }
-  var titleEl = document.getElementById('pin-gardu-title');
-  if (titleEl) titleEl.textContent = 'PIN Admin — ' + (s.ulp || 'ULP Anda');
-  updatePinGarduDots();
-  document.getElementById('modal-pin-gardu').style.display = 'flex';
-  _pinGarduCallback = _cobaPinCallback;
+  });
 }
 
 function _tampilkanPanelAdmin(s) {
@@ -1868,7 +1847,15 @@ function muatDaftarGardu(force, ulpFilter){
   document.getElementById('list-gardu').innerHTML =
     '<div class="loading"><div class="spinner"></div>Memuat daftar gardu...</div>';
 
-  apiGet({action:'getDaftarGardu'}, function(res){
+  // PERBAIKAN: Kirim ULP filter ke server agar data sudah terfilter
+  var apiParams = { action:'getDaftarGardu' };
+  if (activeULP) {
+    // Format enum Supabase: 'ULP ABEPURA'
+    var ulpEnum = String(activeULP).trim().toUpperCase();
+    if (!ulpEnum.startsWith('ULP ')) ulpEnum = 'ULP ' + ulpEnum.replace(/^ULP\s+/, '');
+    apiParams.ulp = ulpEnum;
+  }
+  apiGet(apiParams, function(res){
     if(res.status!=='ok'){
       document.getElementById('list-gardu').innerHTML =
         '<div class="alert alert-err" style="margin:var(--sp-md);">'+
@@ -3766,12 +3753,16 @@ function generateRekapStatusKepemilikan(rows, periodeLabel, ulpFilter) {
 
 function muatRekap() {
   var s = getSession();
-  // [Fix Rekap] Kirim parameter ULP ke API jika login sebagai adminUlp
   var params = { action:'getRekap' };
   if (s && s.role === 'admin' && s.ulp) {
-    var sheetVal = ulpAkunToSheet(s.ulp);
-    if (sheetVal) params.ulp = sheetVal;
+    // PERBAIKAN: Kirim dalam format enum Supabase ('ULP ABEPURA', bukan 'ABEPURA')
+    var ulpEnum = String(s.ulp).trim().toUpperCase();
+    // Pastikan format 'ULP XXXXX'
+    if (!ulpEnum.startsWith('ULP ')) ulpEnum = 'ULP ' + ulpEnum;
+    params.ulp = ulpEnum;
   }
+  document.getElementById('rekap-content').innerHTML = '<div class="loading"><div class="spinner"></div>Memuat rekap...</div>';
+  rekapSudahMuat = false;
   apiGet(params, function(res) {
     rekapSudahMuat = true;
     if (res.status !== 'ok') {
@@ -3964,7 +3955,7 @@ function renderRekap(d) {
     });
     html += '</div>';
     // Link ke spreadsheet lengkap
-    // Spreadsheet link dihapus (Supabase version)
+    html += '<a href="'+SPREADSHEET_URL+'" target="_blank" rel="noopener" style="display:flex;align-items:center;justify-content:center;gap:8px;margin-top:var(--sp-xs);padding:clamp(10px,3vw,13px);background:var(--pln-bg);border:1.5px solid var(--pln-border);border-radius:var(--radius-sm);font-size:var(--fs-xs);color:var(--pln-biru2);font-weight:700;text-decoration:none;">📊 Lihat semua riwayat di Spreadsheet →</a>';
   }
 
   // ── Section: Gardu Kritis ──────────────────────────────────
@@ -4282,7 +4273,7 @@ function submitTambahGardu() {
     msgEl.textContent='NO GARDU dan ULP wajib diisi.'; return;
   }
 
-  function doTambah(pin) {
+  mintaPin('Konfirmasi PIN — Tambah Gardu', function(pin, done) {
     apiGet({
       action:'tambahGardu', token: s.token, pin:pin, noGardu:noGardu, ulp:ulp,
       unitup: unitup,
@@ -4297,18 +4288,18 @@ function submitTambahGardu() {
       lng:(document.getElementById('f-lng').value||'').trim(),
       keterangan:(document.getElementById('f-keterangan').value||'').trim()
     }, function(res){
-      msgEl.style.display='block';
       if (res.status==='ok'){
+        done({ ok: true });
+        msgEl.style.display='block';
         msgEl.style.background='#D1FAE5'; msgEl.style.color='#065F46'; msgEl.textContent=res.message;
         setTimeout(function(){ document.getElementById('modal-tambah-gardu').style.display='none'; muatDaftarGardu(true); }, 1500);
       } else {
+        done({ ok: false, msg: res.message || 'PIN salah atau gagal menyimpan.' });
+        msgEl.style.display='block';
         msgEl.style.background='#FEE2E2'; msgEl.style.color='#991B1B'; msgEl.textContent=res.message||'Gagal menambahkan gardu.';
       }
     });
-  }
-
-  // FIX: User ULP sudah verifikasi PIN saat buka panel — minta PIN sekali lagi untuk konfirmasi operasi
-  bukaModalPinGardu('Konfirmasi PIN — Tambah Gardu', doTambah);
+  });
 }
 
 function cariGarduUntukEdit() {
@@ -4402,8 +4393,7 @@ function submitEditGardu() {
     'Perubahan ini akan tersimpan ke database.\nLanjutkan?';
   if (!confirm(konfirmasiMsg)) return;
 
-  // FIX: minta PIN ULP untuk konfirmasi setiap operasi edit
-  bukaModalPinGardu('Konfirmasi PIN — Edit Gardu', function(pin) {
+  mintaPin('Konfirmasi PIN — Edit Gardu', function(pin, done) {
     apiGet({
       action:'editGardu', token: s.token, pin:pin, noGarduLama:noLama,
       noGarduBaru:(document.getElementById('ef-nogardu-baru').value||'').trim().toUpperCase(),
@@ -4420,11 +4410,14 @@ function submitEditGardu() {
       lng:(document.getElementById('ef-lng').value||'').trim(),
       keterangan:(document.getElementById('ef-keterangan').value||'').trim()
     }, function(res){
-      msgEl.style.display='block';
       if (res.status==='ok'){
+        done({ ok: true });
+        msgEl.style.display='block';
         msgEl.style.background='#D1FAE5'; msgEl.style.color='#065F46'; msgEl.textContent=res.message;
         setTimeout(function(){ document.getElementById('modal-edit-gardu').style.display='none'; muatDaftarGardu(true); }, 1500);
       } else {
+        done({ ok: false, msg: res.message || 'PIN salah atau gagal menyimpan.' });
+        msgEl.style.display='block';
         msgEl.style.background='#FEE2E2'; msgEl.style.color='#991B1B'; msgEl.textContent=res.message||'Gagal mengedit gardu.';
       }
     });
@@ -4539,6 +4532,32 @@ function tutupModalPinGardu() {
   _pinGarduCallback = null;
 }
 
+// ── mintaPin: helper untuk minta PIN dengan retry otomatis ────
+// judul: teks di modal
+// onPinDapat: function(pin) dipanggil saat PIN dimasukkan (4+ digit)
+//   return { ok: true } → tutup modal sukses
+//   return { ok: false, msg: '...' } → tampilkan error, modal tetap terbuka
+// Catatan: onPinDapat bisa async atau sync, tapi harus return/resolve { ok, msg }
+function mintaPin(judul, onPinDapat) {
+  function handler(pin) {
+    var errEl = document.getElementById('pin-gardu-error');
+    if (errEl) { errEl.textContent = '⏳ Memverifikasi...'; errEl.style.display = 'block'; errEl.style.color = 'var(--pln-biru2)'; }
+    // onPinDapat bisa sync atau async via callback style
+    onPinDapat(pin, function(result) {
+      if (result && result.ok) {
+        tutupModalPinGardu();
+      } else {
+        var msg = (result && result.msg) ? result.msg : 'PIN salah. Coba lagi.';
+        if (errEl) { errEl.textContent = '❌ ' + msg; errEl.style.display = 'block'; errEl.style.color = 'var(--pln-red)'; }
+        _pinGarduCallback = handler; // Pertahankan callback untuk retry
+        pinGarduBuffer = '';
+        updatePinGarduDots();
+      }
+    });
+  }
+  bukaModalPinGardu(judul, handler);
+}
+
 function updatePinGarduDots() {
   var dots = document.querySelectorAll('#pin-gardu-dots .pin-dot');
   dots.forEach(function(d, i){ d.classList.toggle('filled', i < pinGarduBuffer.length); });
@@ -4597,11 +4616,18 @@ document.addEventListener('DOMContentLoaded', function() {
       pinGarduBuffer += v;
       updatePinGarduDots();
       if (pinGarduBuffer.length >= 4 && _pinGarduCallback) {
-        // Langsung serahkan ke callback — server yang verifikasi
+        // PERBAIKAN: Jangan tutup modal sebelum callback — biarkan callback yang tutup
+        // Ini penting agar bisa retry jika PIN salah
+        var pin = pinGarduBuffer;
+        var cb = _pinGarduCallback;
+        // Reset buffer tapi JANGAN null-kan callback dulu
+        pinGarduBuffer = '';
+        updatePinGarduDots();
+        // Tampilkan loading di dots
+        var errEl = document.getElementById('pin-gardu-error');
+        if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
         setTimeout(function() {
-          var pin = pinGarduBuffer;
-          tutupModalPinGardu();
-          _pinGarduCallback(pin);
+          cb(pin);
         }, 120);
       }
     });

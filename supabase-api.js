@@ -185,6 +185,7 @@ async function _getDaftarGardu(p, signal) {
       'TIPE':                g.tipe     || '',
       'STATUS_OPERASIONAL':  g.status_operasional || '',
       'STATUS_KEPEMILIKAN':  g.status_kepemilikan || '',
+      'MEREK_TRAFO':         g.merek_trafo || '',
       '_lastInspeksi':       g.last_inspeksi_tgl  || '',
       '_lastPetugas':        g.last_inspeksi_petugas || '',
       '_lastBeban':          g.last_prosen != null ? String(g.last_prosen) : '',
@@ -259,93 +260,96 @@ async function _getTrenBeban(p, signal) {
 // ── REKAP DASHBOARD ──────────────────────────────────────────
 // PERBAIKAN: pakai RPC fn_get_rekap agar bypass RLS pada view
 async function _getRekap(p, signal) {
-  // Step 1: Ambil data dari v_rekap_dashboard via RPC
-  var rpcRes = await sbRpc('fn_get_rekap', {
-    p_ulp: (p && p.ulp) ? p.ulp : null
-  }, signal);
+  var ulpFilter = (p && p.ulp) ? p.ulp : null;
+  var now = new Date();
+  var bulanIni = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0');
 
-  var rekapRows = [];
-  if (rpcRes.ok) {
-    var rpcData = await rpcRes.json();
-    if (rpcData && rpcData.status === 'ok' && rpcData.rows) {
-      rekapRows = Array.isArray(rpcData.rows) ? rpcData.rows : [];
-    }
-  }
+  // ── Step 1: Ambil semua gardu (dengan filter ULP jika ada) ──
+  var garduUrl = '/rest/v1/gardu?select=no_gardu,ulp,status_operasional&limit=10000';
+  if (ulpFilter) garduUrl += '&ulp=eq.' + encodeURIComponent(ulpFilter);
+  var resGardu = await sbFetch(garduUrl, { signal: signal });
+  var garduRows = resGardu.ok ? await resGardu.json() : [];
 
-  // Fallback: coba query langsung ke view (kalau GRANT sudah berjalan)
-  if (!rekapRows.length) {
-    var url = '/rest/v1/v_rekap_dashboard?select=*';
-    if (p && p.ulp) url += '&ulp=eq.' + encodeURIComponent(p.ulp);
-    var resV = await sbFetch(url, { signal: signal });
-    if (resV.ok) {
-      rekapRows = await resV.json();
-    }
-  }
+  var totalGardu = garduRows.length;
+  var aktif = garduRows.filter(function(g){ return (g.status_operasional||'').toUpperCase() === 'AKTIF'; }).length;
+  var nonAktif = totalGardu - aktif;
 
-  // Step 2: Hitung agregat dari rekapRows
-  var totalGardu = 0, aktif = 0, nonAktif = 0, inspeksiBulan = 0;
+  // Buat set no_gardu untuk filter inspeksi
+  var garduSet = new Set(garduRows.map(function(g){ return g.no_gardu; }));
+
+  // ── Step 2: Ambil data v_gardu_lengkap untuk last_inspeksi & overdue ──
+  var vGarduUrl = '/rest/v1/v_gardu_lengkap?select=no_gardu,ulp,last_inspeksi_tgl,last_prosen&limit=10000';
+  if (ulpFilter) vGarduUrl += '&ulp=eq.' + encodeURIComponent(ulpFilter);
+  var resVGardu = await sbFetch(vGarduUrl, { signal: signal });
+  var vGarduRows = resVGardu.ok ? await resVGardu.json() : [];
+
+  var sudahInspeksi = 0, overdue90 = 0;
+  var bNormal = 0, bLebih = 0, bNoData = 0;
   var perULP = {};
 
-  rekapRows.forEach(function(r){
-    totalGardu    += parseInt(r.total_gardu)        || 0;
-    aktif         += parseInt(r.gardu_aktif)        || 0;
-    nonAktif      += parseInt(r.gardu_nonaktif)     || 0;
-    inspeksiBulan += parseInt(r.inspeksi_bulan_ini) || 0;
-    perULP[r.ulp] = {
-      total:    parseInt(r.total_gardu)        || 0,
-      inspeksi: parseInt(r.inspeksi_bulan_ini) || 0,
-      overdue:  parseInt(r.gardu_overload)     || 0
-    };
-  });
+  vGarduRows.forEach(function(g){
+    // Per ULP counter
+    var ulpKey = g.ulp || 'UNKNOWN';
+    if (!perULP[ulpKey]) perULP[ulpKey] = { total: 0, inspeksi: 0, overdue: 0 };
+    perULP[ulpKey].total++;
 
-  // Step 3: Hitung sudah/belum inspeksi & overdue
-  var resInsp = await sbFetch(
-    '/rest/v1/inspeksi?select=no_gardu&limit=10000',
-    { signal: signal }
-  );
-  var inspRows = resInsp.ok ? await resInsp.json() : [];
-  var garduDgInspeksi = new Set(inspRows.map(function(r){ return r.no_gardu; }));
-  var sudahInspeksi = garduDgInspeksi.size;
-  var belumInspeksi = totalGardu - sudahInspeksi;
+    if (g.last_inspeksi_tgl) {
+      sudahInspeksi++;
+      perULP[ulpKey].inspeksi++;
+      var hari = Math.floor((now - new Date(g.last_inspeksi_tgl)) / 86400000);
+      if (hari > 90) { overdue90++; perULP[ulpKey].overdue++; }
+    } else {
+      overdue90++;
+      perULP[ulpKey].overdue++;
+    }
 
-  // Step 4: Overdue
-  var resLastInsp = await sbFetch(
-    '/rest/v1/v_gardu_lengkap?select=no_gardu,last_inspeksi_tgl&limit=5000',
-    { signal: signal }
-  );
-  var lastInspRows = resLastInsp.ok ? await resLastInsp.json() : [];
-  var overdue90 = 0;
-  var now = new Date();
-  lastInspRows.forEach(function(r){
-    if (!r.last_inspeksi_tgl) { overdue90++; return; }
-    var hari = Math.floor((now - new Date(r.last_inspeksi_tgl)) / 86400000);
-    if (hari > 90) overdue90++;
-  });
-
-  // Step 5: Rekap beban (last inspeksi per gardu)
-  var resBeban = await sbFetch(
-    '/rest/v1/inspeksi?select=no_gardu,prosen&order=no_gardu.asc,tgl_ukur.desc&limit=10000',
-    { signal: signal }
-  );
-  var bebanRows = resBeban.ok ? await resBeban.json() : [];
-  var seenBeban = {};
-  var bNormal = 0, bLebih = 0, bNoData = 0;
-  bebanRows.forEach(function(r){
-    if (seenBeban[r.no_gardu]) return;
-    seenBeban[r.no_gardu] = true;
-    var pb = parseFloat(r.prosen);
-    if (isNaN(pb)) bNoData++;
+    // Beban
+    var pb = parseFloat(g.last_prosen);
+    if (isNaN(pb) || g.last_prosen == null) bNoData++;
     else if (pb > 80) bLebih++;
     else bNormal++;
   });
 
-  // Step 6: 10 inspeksi terbaru
-  var resTerbaru = await sbFetch(
-    '/rest/v1/inspeksi?select=no_gardu,tgl_ukur,jam_ukur,petugas,prosen,penyulang,alamat' +
-    '&order=tgl_ukur.desc,jam_ukur.desc&limit=10',
-    { signal: signal }
-  );
+  // Jika vGarduRows kosong tapi garduRows ada, gunakan garduRows untuk total
+  if (vGarduRows.length === 0 && totalGardu > 0) {
+    overdue90 = totalGardu;
+    bNoData = totalGardu;
+    garduRows.forEach(function(g){
+      var ulpKey = g.ulp || 'UNKNOWN';
+      if (!perULP[ulpKey]) perULP[ulpKey] = { total: 0, inspeksi: 0, overdue: 0 };
+      perULP[ulpKey].total++;
+      perULP[ulpKey].overdue++;
+    });
+  }
+
+  var belumInspeksi = totalGardu - sudahInspeksi;
+
+  // ── Step 3: Inspeksi bulan ini ──
+  var inspBulanUrl = '/rest/v1/inspeksi?select=id&tgl_ukur=gte.' + bulanIni + '-01&tgl_ukur=lte.' + bulanIni + '-31&limit=10000';
+  var resInspBulan = await sbFetch(inspBulanUrl, { signal: signal });
+  var inspBulanRows = resInspBulan.ok ? await resInspBulan.json() : [];
+  // Filter ke gardu di ULP yang dipilih jika ada filter
+  var inspeksiBulanIni = inspBulanRows.length;
+  if (ulpFilter && garduSet.size > 0) {
+    // Perlu join — ambil no_gardu dari inspeksi bulan ini lalu filter
+    var inspBulanDetailUrl = '/rest/v1/inspeksi?select=no_gardu&tgl_ukur=gte.' + bulanIni + '-01&tgl_ukur=lte.' + bulanIni + '-31&limit=10000';
+    var resInspBulanDetail = await sbFetch(inspBulanDetailUrl, { signal: signal });
+    var inspBulanDetail = resInspBulanDetail.ok ? await resInspBulanDetail.json() : [];
+    inspeksiBulanIni = inspBulanDetail.filter(function(r){ return garduSet.has(r.no_gardu); }).length;
+  }
+
+  // ── Step 4: 10 inspeksi terbaru (filter ULP jika ada) ──
+  var terbaruUrl = '/rest/v1/inspeksi?select=no_gardu,tgl_ukur,jam_ukur,petugas,prosen,penyulang,alamat&order=tgl_ukur.desc,jam_ukur.desc&limit=50';
+  var resTerbaru = await sbFetch(terbaruUrl, { signal: signal });
   var terbaruRows = resTerbaru.ok ? await resTerbaru.json() : [];
+
+  // Filter ke ULP yang relevan jika ada filter
+  if (ulpFilter && garduSet.size > 0) {
+    terbaruRows = terbaruRows.filter(function(r){ return garduSet.has(r.no_gardu); }).slice(0, 10);
+  } else {
+    terbaruRows = terbaruRows.slice(0, 10);
+  }
+
   var terbaru = terbaruRows.map(function(r){
     return {
       noGardu:   r.no_gardu  || '',
@@ -367,7 +371,7 @@ async function _getRekap(p, signal) {
       sudahInspeksi: sudahInspeksi,
       belumInspeksi: belumInspeksi,
       overdue90:     overdue90,
-      bulanIni:      inspeksiBulan,
+      bulanIni:      inspeksiBulanIni,
       perULP:        perULP,
       bebanCount: {
         'Normal (<=80%)':  bNormal,
