@@ -4,346 +4,619 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>QR Generator — PLN UP3 Jayapura</title>
-<script src="https://cdn.jsdelivr.net/npm/qrcode@1.5.3/build/qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/FileSaver.js/2.0.5/FileSaver.min.js"></script>
 <style>
-:root{--biru:#003B7B;--biru2:#0055A5;--kuning:#FFD700;--text:#1A2B4A;--text2:#4A5568;--text3:#8DA0B8;--border:#DDE3EC;--bg:#F0F4FA;--card:#fff;--red:#EF4444;--green:#10B981;--radius:14px;--sp:16px;}
 *{box-sizing:border-box;margin:0;padding:0;}
-body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--bg);color:var(--text);min-height:100vh;padding-bottom:40px;}
-.header{background:linear-gradient(135deg,var(--biru) 0%,var(--biru2) 100%);color:#fff;padding:20px var(--sp) 16px;display:flex;align-items:center;gap:14px;}
-.header-logo{width:44px;height:44px;background:var(--kuning);border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:900;color:var(--biru);flex-shrink:0;}
-.header h1{font-size:18px;font-weight:800;}
-.header p{font-size:12px;opacity:.75;margin-top:2px;}
-.container{max-width:680px;margin:0 auto;padding:var(--sp);}
-.card{background:var(--card);border-radius:var(--radius);border:1px solid var(--border);padding:var(--sp);margin-bottom:var(--sp);box-shadow:0 1px 4px rgba(0,0,0,.06);}
-.card-title{font-size:13px;font-weight:700;color:var(--biru2);text-transform:uppercase;letter-spacing:.5px;margin-bottom:12px;padding-bottom:10px;border-bottom:1px solid var(--border);}
-label{font-size:12px;font-weight:600;color:var(--text2);display:block;margin-bottom:4px;}
-input,select{width:100%;padding:10px 12px;border:1.5px solid var(--border);border-radius:8px;font-size:14px;color:var(--text);background:#fff;outline:none;transition:border-color .2s;}
-input:focus,select:focus{border-color:var(--biru2);}
-.form-row{margin-bottom:12px;}
-.form-row-2{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px;}
-.url-preview{background:#F8FAFC;border:1.5px solid var(--border);border-radius:8px;padding:10px 12px;font-size:12px;color:var(--text2);word-break:break-all;line-height:1.5;font-family:monospace;margin-bottom:12px;}
-.url-preview strong{color:var(--biru2);}
-.btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;padding:10px 20px;border-radius:8px;border:none;font-size:14px;font-weight:600;cursor:pointer;transition:opacity .15s,transform .1s;}
-.btn:active{transform:scale(.97);}
-.btn-primary{background:var(--biru2);color:#fff;}
-.btn-primary:hover{opacity:.88;}
-.btn-outline{background:transparent;border:1.5px solid var(--biru2);color:var(--biru2);}
-.btn-outline:hover{background:#EBF3FF;}
-.btn-group{display:flex;gap:10px;flex-wrap:wrap;}
-.qr-wrap{text-align:center;padding:var(--sp) 0;}
-.qr-wrap canvas{border-radius:10px;border:4px solid var(--biru2);max-width:100%;}
-.qr-label{margin-top:10px;font-size:16px;font-weight:800;color:var(--biru2);letter-spacing:1px;}
-.qr-sublabel{font-size:12px;color:var(--text3);margin-top:2px;}
-.batch-list{max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;padding:8px;margin-bottom:12px;font-size:13px;}
-.batch-item{display:flex;justify-content:space-between;align-items:center;padding:6px 8px;border-radius:6px;margin-bottom:4px;background:#F0F4FA;}
-.batch-item:last-child{margin-bottom:0;}
-.batch-item-del{color:var(--red);cursor:pointer;font-size:16px;background:none;border:none;padding:0 4px;}
-.mode-tabs{display:flex;gap:8px;margin-bottom:var(--sp);}
-.mode-tab{flex:1;padding:10px;border:1.5px solid var(--border);border-radius:8px;background:var(--card);color:var(--text2);font-size:13px;font-weight:600;cursor:pointer;text-align:center;transition:all .15s;}
-.mode-tab.active{border-color:var(--biru2);background:var(--biru2);color:#fff;}
-.alert{border-radius:8px;padding:10px 14px;font-size:13px;margin-bottom:12px;display:flex;align-items:flex-start;gap:8px;}
-.alert-info{background:#EBF5FF;color:#1D4ED8;border:1px solid #BFDBFE;}
-.alert-warn{background:#FFFBEB;color:#92400E;border:1px solid #FDE68A;}
-.batch-grid{display:flex;flex-wrap:wrap;gap:var(--sp);justify-content:center;}
-.batch-qr-card{background:var(--card);border-radius:var(--radius);border:1px solid var(--border);padding:16px;text-align:center;box-shadow:0 1px 4px rgba(0,0,0,.06);}
-@media print{.no-print{display:none !important;}body{background:#fff;}.card{box-shadow:none;border:1px solid #ccc;break-inside:avoid;}.batch-qr-card{break-inside:avoid;}}
+:root{
+  --biru:#0A2D6B;--biru2:#1048A8;--biru-muda:#2E7CF6;--biru-pale:#EEF4FF;
+  --kuning:#F59E0B;--bg:#F5F7FA;--card:#fff;--border:#E2E8F2;
+  --text:#0F1E38;--text2:#3D5580;--text3:#8499BB;
+  --green:#059669;--red:#DC2626;--orange:#D97706;
+  --radius:14px;--shadow:0 2px 12px rgba(10,45,107,.1);
+}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:var(--bg);color:var(--text);min-height:100vh;}
+
+/* HEADER */
+.header{background:var(--biru);color:#fff;padding:16px 20px;display:flex;align-items:center;gap:12px;box-shadow:0 2px 12px rgba(10,45,107,.35);}
+.header-logo{width:40px;height:40px;background:var(--kuning);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0;}
+.header-title{font-size:17px;font-weight:800;letter-spacing:-.3px;}
+.header-sub{font-size:11px;opacity:.7;margin-top:1px;}
+
+/* MAIN LAYOUT */
+.main{max-width:960px;margin:0 auto;padding:20px 16px 60px;}
+.section-title{font-size:13px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin:24px 0 10px;}
+
+/* CONTROL PANEL */
+.card{background:var(--card);border-radius:var(--radius);padding:18px;box-shadow:var(--shadow);margin-bottom:16px;}
+.form-row{display:flex;flex-wrap:wrap;gap:10px;align-items:flex-end;}
+.form-group{display:flex;flex-direction:column;gap:4px;flex:1;min-width:140px;}
+.form-group label{font-size:11px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.4px;}
+.form-group input,.form-group select{padding:9px 12px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;color:var(--text);background:#fff;outline:none;transition:border-color .15s;}
+.form-group input:focus,.form-group select:focus{border-color:var(--biru-muda);}
+.btn{padding:9px 18px;border:none;border-radius:8px;font-size:13px;font-weight:700;cursor:pointer;transition:all .15s;display:inline-flex;align-items:center;gap:6px;}
+.btn-blue{background:var(--biru2);color:#fff;}
+.btn-blue:hover{background:var(--biru);}
+.btn-green{background:var(--green);color:#fff;}
+.btn-green:hover{filter:brightness(1.1);}
+.btn-outline{background:#fff;color:var(--biru2);border:1.5px solid var(--border);}
+.btn-outline:hover{border-color:var(--biru-muda);background:var(--biru-pale);}
+.btn:disabled{opacity:.4;cursor:not-allowed;}
+.api-input{width:100%;padding:9px 12px;border:1.5px solid var(--border);border-radius:8px;font-size:12px;font-family:monospace;color:var(--text);outline:none;}
+.api-input:focus{border-color:var(--biru-muda);}
+.help-text{font-size:11px;color:var(--text3);margin-top:4px;line-height:1.5;}
+
+/* STATUS */
+.status{padding:10px 14px;border-radius:8px;font-size:12px;font-weight:600;margin-top:10px;display:none;line-height:1.5;}
+.status.ok{background:#D1FAE5;color:#065F46;border:1px solid #A7F3D0;}
+.status.err{background:#FEE2E2;color:#991B1B;border:1px solid #FECACA;}
+.status.info{background:var(--biru-pale);color:var(--biru2);border:1px solid #BFDBFE;}
+
+/* FILTER BAR */
+.filter-bar{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:12px;}
+.filter-bar input{flex:1;min-width:160px;padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;outline:none;}
+.filter-bar input:focus{border-color:var(--biru-muda);}
+.filter-bar select{padding:8px 12px;border:1.5px solid var(--border);border-radius:8px;font-size:13px;outline:none;background:#fff;}
+.badge{display:inline-flex;align-items:center;gap:3px;padding:3px 8px;border-radius:20px;font-size:10px;font-weight:700;}
+.badge-aktif{background:#DCFCE7;color:#15803D;}
+.badge-nonaktif{background:#FEE2E2;color:#B91C1C;}
+.count-info{font-size:12px;color:var(--text3);font-weight:600;}
+
+/* QR GRID */
+.qr-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:14px;}
+.qr-card{background:var(--card);border:1.5px solid var(--border);border-radius:12px;padding:14px;display:flex;flex-direction:column;align-items:center;gap:8px;transition:box-shadow .15s;}
+.qr-card:hover{box-shadow:0 4px 20px rgba(10,45,107,.12);}
+.qr-canvas-wrap{width:140px;height:140px;display:flex;align-items:center;justify-content:center;}
+.qr-info{width:100%;text-align:center;}
+.qr-nogardu{font-family:monospace;font-size:14px;font-weight:800;color:var(--biru2);line-height:1.2;word-break:break-all;}
+.qr-ulp{font-size:10px;color:var(--text3);font-weight:600;text-transform:uppercase;margin-top:2px;}
+.qr-penyulang{font-size:10px;color:var(--text2);margin-top:1px;word-break:break-all;}
+.qr-daya{font-size:10px;color:var(--text3);margin-top:2px;}
+.qr-statusbadge{margin-top:4px;}
+.qr-card-actions{display:flex;gap:6px;margin-top:6px;width:100%;}
+.qr-card-actions .btn{flex:1;padding:6px 8px;font-size:11px;justify-content:center;}
+
+/* EMPTY */
+.empty{text-align:center;padding:48px 20px;color:var(--text3);}
+.empty-icon{font-size:48px;margin-bottom:8px;}
+.empty-msg{font-size:14px;font-weight:600;}
+.empty-sub{font-size:12px;margin-top:4px;}
+
+/* LOADING */
+.loading{text-align:center;padding:48px 20px;color:var(--text3);}
+.spinner{width:32px;height:32px;border:3px solid var(--border);border-top-color:var(--biru-muda);border-radius:50%;animation:spin .7s linear infinite;margin:0 auto 12px;}
+@keyframes spin{to{transform:rotate(360deg);}}
+
+/* PROGRESS BAR */
+.progress-wrap{display:none;margin-top:8px;}
+.progress-bar-bg{background:var(--border);border-radius:20px;height:8px;overflow:hidden;}
+.progress-bar-fill{background:var(--biru-muda);height:100%;border-radius:20px;width:0%;transition:width .2s;}
+.progress-label{font-size:11px;color:var(--text3);margin-top:4px;font-weight:600;}
+
+/* PRINT */
+@media print{
+  body{background:#fff;}
+  .no-print{display:none!important;}
+  .header{background:var(--biru)!important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+  .qr-grid{grid-template-columns:repeat(3,1fr);gap:10px;}
+  .qr-card{break-inside:avoid;border:1px solid #ccc;border-radius:8px;padding:10px;}
+  .qr-card-actions{display:none;}
+  .main{padding:0;}
+  .section-title,.filter-bar,.count-info{display:none;}
+}
+
+/* MODAL DETAIL QR */
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:999;align-items:center;justify-content:center;padding:20px;}
+.modal-overlay.open{display:flex;}
+.modal-box{background:#fff;border-radius:16px;padding:24px;max-width:360px;width:100%;box-shadow:0 8px 40px rgba(0,0,0,.2);text-align:center;}
+.modal-qr-big{width:200px;height:200px;margin:0 auto 12px;}
+.modal-nogardu{font-family:monospace;font-size:20px;font-weight:900;color:var(--biru2);margin-bottom:4px;}
+.modal-info{font-size:12px;color:var(--text3);margin-bottom:8px;line-height:1.6;text-align:left;}
+.modal-url{font-size:9px;color:var(--text3);word-break:break-all;background:var(--biru-pale);padding:6px 8px;border-radius:6px;margin-bottom:16px;text-align:left;}
+.modal-actions{display:flex;gap:8px;justify-content:center;}
+
+/* ALERT */
+.alert-box{padding:12px 16px;border-radius:8px;font-size:12px;border:1px solid;margin-bottom:12px;}
+.alert-info{background:#EFF6FF;color:#1D4ED8;border-color:#BFDBFE;}
 </style>
 </head>
 <body>
 
+<!-- HEADER -->
 <div class="header">
   <div class="header-logo">⚡</div>
   <div>
-    <h1>QR Generator — Gardu PLN</h1>
-    <p>PLN UP3 Jayapura · Monitoring Gardu Distribusi</p>
+    <div class="header-title">QR Generator — Manajemen Gardu</div>
+    <div class="header-sub">PLN UP3 Jayapura · Generate & Print QR Code per Gardu (Supabase)</div>
   </div>
 </div>
 
-<div class="container">
+<!-- MAIN -->
+<div class="main">
 
-  <!-- Konfigurasi URL -->
+  <!-- SETUP -->
+  <div class="section-title no-print">⚙️ Konfigurasi Supabase</div>
   <div class="card no-print">
-    <div class="card-title">⚙️ Konfigurasi URL Aplikasi</div>
-    <div class="alert alert-warn">
-      ⚠️ Isi URL aplikasi Netlify kamu dulu. Contoh: <code>https://gardu-pln.netlify.app</code>
+    <div class="alert-box alert-info" style="margin-bottom:14px;">
+      ℹ️ QR Generator ini terhubung langsung ke Supabase. Isi URL Supabase, Anon Key, dan URL halaman web app (index.html) Anda di bawah, lalu klik <b>Muat Data Gardu</b>.
+    </div>
+    <div class="form-row" style="margin-bottom:10px;">
+      <div class="form-group" style="flex:2;min-width:240px;">
+        <label>Supabase Project URL</label>
+        <input class="api-input" id="sb-url" type="url"
+          placeholder="https://xxxxx.supabase.co"
+          value="https://lrjpdcyyaxcfdpzxygrj.supabase.co">
+        <span class="help-text">Dari Settings → API di dashboard Supabase</span>
+      </div>
+    </div>
+    <div class="form-row" style="margin-bottom:10px;">
+      <div class="form-group">
+        <label>Anon Key (public)</label>
+        <input class="api-input" id="sb-anon" type="text"
+          placeholder="eyJhbGci..."
+          value="eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImxyanBkY3l5YXhjZmRwenh5Z3JqIiwicm9sZSI6ImFub24iLCJpYXQiOjE3Nzg1NDI4MzcsImV4cCI6MjA5NDExODgzN30.BgplnVYogpr5qRQ2pITNLuC4iw7AzuR_rikuxSM7Dxo">
+        <span class="help-text">Anon/public key, bukan service_role key</span>
+      </div>
+    </div>
+    <div class="form-row" style="margin-bottom:12px;">
+      <div class="form-group">
+        <label>URL Halaman Web App (index.html)</label>
+        <input class="api-input" id="web-url" type="url"
+          placeholder="https://namadomain.com/index.html"
+          value="">
+        <span class="help-text">URL lengkap halaman app. QR akan mengarah ke: URL + ?direct=1&noGardu=XXX</span>
+      </div>
     </div>
     <div class="form-row">
-      <label>URL Aplikasi (Netlify)</label>
-      <input type="url" id="base-url" placeholder="https://gardu-pln-jayapura.netlify.app" oninput="updatePreview()">
+      <button class="btn btn-blue no-print" onclick="muatGardu()">🔄 Muat Data Gardu</button>
+      <button class="btn btn-green no-print" id="btn-print-all" onclick="printSemua()" disabled>🖨️ Print Semua QR</button>
+      <button class="btn btn-outline no-print" id="btn-dl-all" onclick="downloadSemua()" disabled>⬇️ Download ZIP</button>
     </div>
-    <div class="form-row">
-      <label>Mode Akses QR</label>
-      <select id="qr-mode" onchange="updatePreview()">
-        <option value="direct">Mode Langsung (direct=1) — buka detail gardu tanpa login</option>
-        <option value="normal">Mode Normal — buka aplikasi, user login dulu</option>
-      </select>
-    </div>
-  </div>
-
-  <!-- Mode tabs -->
-  <div class="mode-tabs no-print">
-    <div class="mode-tab active" onclick="setMode('single')">📱 Satu Gardu</div>
-    <div class="mode-tab" onclick="setMode('batch')">📋 Batch (banyak gardu)</div>
-  </div>
-
-  <!-- Panel: Single -->
-  <div id="panel-single">
-    <div class="card no-print">
-      <div class="card-title">📱 Generate QR Satu Gardu</div>
-      <div class="form-row-2">
-        <div>
-          <label>No. Gardu *</label>
-          <input type="text" id="no-gardu" placeholder="ABE001"
-            oninput="this.value=this.value.toUpperCase();updatePreview()"
-            style="font-family:monospace;font-weight:700;font-size:16px;">
-        </div>
-        <div>
-          <label>Keterangan (opsional)</label>
-          <input type="text" id="nama-gardu" placeholder="Depan Kantor Samsat" oninput="updatePreview()">
-        </div>
-      </div>
-      <div class="form-row">
-        <label>URL yang akan di-QR-kan:</label>
-        <div class="url-preview" id="url-preview">— isi No. Gardu dan URL aplikasi terlebih dahulu —</div>
-      </div>
-      <div class="form-row">
-        <label>Ukuran QR (px)</label>
-        <select id="qr-size">
-          <option value="200">200px (kecil)</option>
-          <option value="280" selected>280px (sedang)</option>
-          <option value="400">400px (besar — untuk cetak)</option>
-        </select>
-      </div>
-      <div class="btn-group">
-        <button class="btn btn-primary" onclick="generateSingle()">⚡ Generate QR</button>
-        <button class="btn btn-outline" onclick="downloadSingle()">⬇️ Download PNG</button>
-        <button class="btn btn-outline" onclick="window.print()">🖨️ Print</button>
-      </div>
-    </div>
-    <div class="card" id="qr-result-single" style="display:none;">
-      <div class="card-title">📲 QR Code</div>
-      <div class="qr-wrap">
-        <canvas id="qr-canvas-single"></canvas>
-        <div class="qr-label" id="qr-label-single"></div>
-        <div class="qr-sublabel" id="qr-sublabel-single"></div>
-      </div>
+    <div class="status" id="status-msg"></div>
+    <div class="progress-wrap" id="progress-wrap">
+      <div class="progress-bar-bg"><div class="progress-bar-fill" id="progress-fill"></div></div>
+      <div class="progress-label" id="progress-label">Menyiapkan...</div>
     </div>
   </div>
 
-  <!-- Panel: Batch -->
-  <div id="panel-batch" style="display:none;">
-    <div class="card no-print">
-      <div class="card-title">📋 Batch — Generate QR Banyak Gardu</div>
-      <div class="alert alert-info">
-        💡 Tambahkan No. Gardu satu per satu atau import dari CSV (format: NO_GARDU,Keterangan).
-      </div>
-      <div class="form-row-2">
-        <div>
-          <label>No. Gardu</label>
-          <input type="text" id="batch-nogardu" placeholder="ABE001"
-            oninput="this.value=this.value.toUpperCase()"
-            onkeydown="if(event.key==='Enter')tambahBatch()">
-        </div>
-        <div>
-          <label>Keterangan (opsional)</label>
-          <input type="text" id="batch-nama" placeholder="Nama / Lokasi gardu"
-            onkeydown="if(event.key==='Enter')tambahBatch()">
-        </div>
-      </div>
-      <div class="btn-group" style="margin-bottom:12px;">
-        <button class="btn btn-outline" onclick="tambahBatch()">➕ Tambah</button>
-        <button class="btn btn-outline" onclick="document.getElementById('csv-input').click()">📂 Import CSV</button>
-        <input type="file" id="csv-input" accept=".csv,.txt" style="display:none" onchange="bacaCSV(this)">
-      </div>
-      <div class="batch-list" id="batch-list">
-        <div style="text-align:center;color:var(--text3);padding:20px;font-size:13px;">Belum ada gardu ditambahkan.</div>
-      </div>
-      <div class="form-row">
-        <label>Ukuran QR per gardu (px)</label>
-        <select id="batch-qr-size">
-          <option value="180">180px (banyak per halaman)</option>
-          <option value="220" selected>220px (standar)</option>
-          <option value="300">300px (cetak A4)</option>
-        </select>
-      </div>
-      <div class="btn-group">
-        <button class="btn btn-primary" onclick="generateBatch()">⚡ Generate Semua QR</button>
-        <button class="btn btn-outline" onclick="window.print()">🖨️ Print Semua</button>
-        <button class="btn btn-outline" style="color:var(--red);border-color:var(--red);" onclick="clearBatch()">🗑️ Hapus Semua</button>
-      </div>
-    </div>
-    <div class="batch-grid" id="qr-result-batch"></div>
+  <!-- FILTER -->
+  <div class="filter-bar no-print" id="filter-bar" style="display:none;">
+    <input type="text" id="filter-keyword" placeholder="Cari no. gardu, penyulang, alamat..." oninput="applyFilter()">
+    <select id="filter-ulp" onchange="applyFilter()">
+      <option value="">Semua ULP</option>
+    </select>
+    <select id="filter-status" onchange="applyFilter()">
+      <option value="">Semua Status</option>
+      <option value="AKTIF">Aktif</option>
+      <option value="NON-AKTIF">Non-Aktif</option>
+    </select>
+    <span class="count-info" id="count-info"></span>
   </div>
 
+  <!-- GRID -->
+  <div id="qr-container">
+    <div class="empty">
+      <div class="empty-icon">📡</div>
+      <div class="empty-msg">Belum ada data</div>
+      <div class="empty-sub">Isi konfigurasi Supabase di atas, lalu klik "Muat Data Gardu"</div>
+    </div>
+  </div>
+
+</div>
+
+<!-- MODAL DETAIL QR -->
+<div class="modal-overlay" id="modal-detail" onclick="if(event.target===this)tutupModal()">
+  <div class="modal-box">
+    <div class="modal-qr-big" id="modal-qr-big"></div>
+    <div class="modal-nogardu" id="modal-nogardu">—</div>
+    <div class="modal-info" id="modal-info"></div>
+    <div class="modal-url" id="modal-url"></div>
+    <div class="modal-actions">
+      <button class="btn btn-blue" onclick="printModal()">🖨️ Print</button>
+      <button class="btn btn-green" onclick="downloadModal()">⬇️ Simpan PNG</button>
+      <button class="btn btn-outline" onclick="tutupModal()">Tutup</button>
+    </div>
+  </div>
 </div>
 
 <script>
-var batchData = [];
+// ═══════════════════════════════════════════════════════════════
+//  QR Generator — Supabase Edition
+//  PLN UP3 Jayapura
+// ═══════════════════════════════════════════════════════════════
 
-function setMode(mode) {
-  document.querySelectorAll('.mode-tab').forEach(function(t,i){
-    t.classList.toggle('active',(i===0&&mode==='single')||(i===1&&mode==='batch'));
+var allGardu = [];
+var filteredGardu = [];
+var qrInstances = {};
+var modalQR = null;
+var modalGardu = '';
+
+// ── Helpers ──────────────────────────────────────────────────
+function esc(s) {
+  var d = document.createElement('div');
+  d.textContent = String(s || '');
+  return d.innerHTML;
+}
+
+function showStatus(msg, type) {
+  var el = document.getElementById('status-msg');
+  el.innerHTML = msg;
+  el.className = 'status ' + (type || 'info');
+  el.style.display = 'block';
+}
+
+function hideStatus() {
+  document.getElementById('status-msg').style.display = 'none';
+}
+
+function getConfig() {
+  return {
+    sbUrl:  (document.getElementById('sb-url').value  || '').trim().replace(/\/$/, ''),
+    sbAnon: (document.getElementById('sb-anon').value || '').trim(),
+    webUrl: (document.getElementById('web-url').value || '').trim()
+  };
+}
+
+function buildURL(noGardu) {
+  var cfg = getConfig();
+  var webUrl = cfg.webUrl;
+  if (!webUrl) {
+    webUrl = window.location.href.replace('qr-generator.html', 'index.html');
+  }
+  // Hapus trailing ?
+  webUrl = webUrl.replace(/\?$/, '');
+  var sep = webUrl.indexOf('?') === -1 ? '?' : '&';
+  return webUrl + sep + 'direct=1&noGardu=' + encodeURIComponent(noGardu);
+}
+
+// ── Supabase Fetch ───────────────────────────────────────────
+function sbFetch(cfg, path, opts) {
+  opts = opts || {};
+  var headers = {
+    'apikey':        cfg.sbAnon,
+    'Authorization': 'Bearer ' + cfg.sbAnon,
+    'Content-Type':  'application/json'
+  };
+  return fetch(cfg.sbUrl + path, {
+    method:  opts.method  || 'GET',
+    headers: headers,
+    body:    opts.body    || undefined
   });
-  document.getElementById('panel-single').style.display = mode==='single'?'':'none';
-  document.getElementById('panel-batch').style.display  = mode==='batch' ?'':'none';
 }
 
-function buildUrl(noGardu) {
-  var base = (document.getElementById('base-url').value||'').trim().replace(/\/$/,'');
-  var mode = document.getElementById('qr-mode').value;
-  if (!base||!noGardu) return '';
-  return mode==='direct'
-    ? base+'?direct=1&noGardu='+encodeURIComponent(noGardu.trim().toUpperCase())
-    : base+'?noGardu='+encodeURIComponent(noGardu.trim().toUpperCase());
+// ── Muat Gardu dari Supabase ─────────────────────────────────
+function muatGardu() {
+  var cfg = getConfig();
+  if (!cfg.sbUrl) { showStatus('❌ Isi Supabase Project URL terlebih dahulu.', 'err'); return; }
+  if (!cfg.sbAnon) { showStatus('❌ Isi Anon Key terlebih dahulu.', 'err'); return; }
+
+  showStatus('⏳ Memuat data gardu dari Supabase...', 'info');
+  document.getElementById('qr-container').innerHTML =
+    '<div class="loading"><div class="spinner"></div>Mengambil data gardu dari Supabase...</div>';
+
+  // Coba ambil dari view v_gardu_lengkap dulu, fallback ke tabel gardu
+  var url = cfg.sbUrl + '/rest/v1/v_gardu_lengkap?select=no_gardu,ulp,penyulang,alamat,kapasitas_kva,status_operasional&order=no_gardu.asc&limit=5000';
+  var headers = {
+    'apikey':        cfg.sbAnon,
+    'Authorization': 'Bearer ' + cfg.sbAnon,
+    'Content-Type':  'application/json'
+  };
+
+  fetch(url, { headers: headers })
+    .then(function(r) {
+      if (!r.ok && r.status === 404) {
+        // Fallback ke tabel gardu
+        return fetch(cfg.sbUrl + '/rest/v1/gardu?select=no_gardu,ulp,penyulang,alamat,kapasitas_kva,status_operasional&order=no_gardu.asc&limit=5000', { headers: headers });
+      }
+      return r;
+    })
+    .then(function(r) {
+      if (!r.ok) {
+        throw new Error('HTTP ' + r.status + ': ' + r.statusText + '. Periksa Supabase URL dan Anon Key.');
+      }
+      return r.json();
+    })
+    .then(function(data) {
+      if (!Array.isArray(data)) {
+        throw new Error('Response bukan array. Periksa konfigurasi Supabase.');
+      }
+      allGardu = data
+        .filter(function(g) { return String(g.no_gardu || '').trim() !== ''; })
+        .map(function(g) {
+          return {
+            'NO_GARDU':           String(g.no_gardu || '').trim(),
+            'ULP':                String(g.ulp || ''),
+            'PENYULANG':          String(g.penyulang || ''),
+            'ALAMAT':             String(g.alamat || ''),
+            'KAPASITAS_KVA':      g.kapasitas_kva != null ? String(g.kapasitas_kva) : '',
+            'STATUS_OPERASIONAL': String(g.status_operasional || 'AKTIF')
+          };
+        });
+
+      if (!allGardu.length) {
+        showStatus('⚠️ Data berhasil dimuat tapi tidak ada gardu ditemukan.', 'info');
+        document.getElementById('qr-container').innerHTML =
+          '<div class="empty"><div class="empty-icon">🔍</div><div class="empty-msg">Tidak ada data gardu</div><div class="empty-sub">Pastikan tabel gardu sudah diisi.</div></div>';
+        return;
+      }
+
+      // Isi filter ULP
+      var ulpSet = {};
+      allGardu.forEach(function(g) { if (g['ULP']) ulpSet[g['ULP']] = true; });
+      var ulpSel = document.getElementById('filter-ulp');
+      ulpSel.innerHTML = '<option value="">Semua ULP</option>' +
+        Object.keys(ulpSet).sort().map(function(u) {
+          return '<option value="' + esc(u) + '">' + esc(u) + '</option>';
+        }).join('');
+
+      document.getElementById('filter-bar').style.display = 'flex';
+      document.getElementById('btn-print-all').disabled = false;
+      document.getElementById('btn-dl-all').disabled = false;
+
+      showStatus('✅ ' + allGardu.length + ' gardu berhasil dimuat dari Supabase.', 'ok');
+      applyFilter();
+    })
+    .catch(function(err) {
+      var msg = err.message || 'Koneksi gagal';
+      showStatus('❌ Gagal memuat data: ' + msg, 'err');
+      document.getElementById('qr-container').innerHTML =
+        '<div class="empty"><div class="empty-icon">🔌</div><div class="empty-msg">Koneksi ke Supabase gagal</div>' +
+        '<div class="empty-sub">' + esc(msg) + '</div></div>';
+    });
 }
 
-function updatePreview() {
-  var ng  = (document.getElementById('no-gardu').value||'').trim().toUpperCase();
-  var url = buildUrl(ng);
-  var el  = document.getElementById('url-preview');
-  el.innerHTML = url ? '<strong>'+escH(url)+'</strong>' : '— isi No. Gardu dan URL aplikasi terlebih dahulu —';
-}
+// ── Filter ───────────────────────────────────────────────────
+function applyFilter() {
+  var kw     = document.getElementById('filter-keyword').value.trim().toUpperCase();
+  var ulp    = document.getElementById('filter-ulp').value.trim().toUpperCase();
+  var status = document.getElementById('filter-status').value.trim().toUpperCase();
 
-function generateSingle() {
-  var ng   = (document.getElementById('no-gardu').value||'').trim().toUpperCase();
-  var nama = (document.getElementById('nama-gardu').value||'').trim();
-  var size = parseInt(document.getElementById('qr-size').value)||280;
-  var url  = buildUrl(ng);
-  if (!url) { alert('Isi URL Aplikasi dan No. Gardu terlebih dahulu!'); return; }
-  var cv = document.getElementById('qr-canvas-single');
-  QRCode.toCanvas(cv, url, {width:size,margin:2,color:{dark:'#003B7B',light:'#ffffff'}}, function(err){
-    if (err) { alert('Gagal: '+err); return; }
-    document.getElementById('qr-result-single').style.display='';
-    document.getElementById('qr-label-single').textContent=ng;
-    document.getElementById('qr-sublabel-single').textContent=nama||'';
-    document.getElementById('qr-result-single').scrollIntoView({behavior:'smooth',block:'center'});
+  filteredGardu = allGardu.filter(function(g) {
+    var noG   = g['NO_GARDU'].toUpperCase();
+    var ulpG  = g['ULP'].toUpperCase();
+    var penyG = g['PENYULANG'].toUpperCase();
+    var alamG = g['ALAMAT'].toUpperCase();
+    var statG = g['STATUS_OPERASIONAL'].toUpperCase();
+    if (kw && (noG + ulpG + penyG + alamG).indexOf(kw) === -1) return false;
+    if (ulp && ulpG !== ulp) return false;
+    if (status && statG !== status) return false;
+    return true;
   });
+
+  document.getElementById('count-info').textContent =
+    'Menampilkan ' + filteredGardu.length + ' dari ' + allGardu.length + ' gardu';
+
+  renderGrid(filteredGardu);
 }
 
-function downloadSingle() {
-  var ng = (document.getElementById('no-gardu').value||'').trim().toUpperCase()||'QR';
-  var cv = document.getElementById('qr-canvas-single');
-  if (!cv.width) { alert('Generate QR dulu!'); return; }
-  var out = document.createElement('canvas');
-  var pad = 20, lh = 50;
-  out.width  = cv.width+pad*2;
-  out.height = cv.height+pad*2+lh;
-  var ctx = out.getContext('2d');
-  ctx.fillStyle='#fff'; ctx.fillRect(0,0,out.width,out.height);
-  ctx.drawImage(cv,pad,pad);
-  ctx.fillStyle='#003B7B'; ctx.font='bold 22px monospace';
-  ctx.textAlign='center';
-  ctx.fillText(ng, out.width/2, cv.height+pad+32);
-  var a = document.createElement('a');
-  a.download='QR-'+ng+'.png';
-  a.href=out.toDataURL('image/png');
-  a.click();
-}
+// ── Render Grid QR ───────────────────────────────────────────
+function renderGrid(garduList) {
+  qrInstances = {};
+  var container = document.getElementById('qr-container');
 
-function tambahBatch() {
-  var ng   = (document.getElementById('batch-nogardu').value||'').trim().toUpperCase();
-  var nama = (document.getElementById('batch-nama').value||'').trim();
-  if (!ng) { alert('Isi No. Gardu!'); return; }
-  if (batchData.some(function(d){return d.noGardu===ng;})) { alert(ng+' sudah ada.'); return; }
-  batchData.push({noGardu:ng,nama:nama});
-  document.getElementById('batch-nogardu').value='';
-  document.getElementById('batch-nama').value='';
-  document.getElementById('batch-nogardu').focus();
-  renderBatchList();
-}
-
-function renderBatchList() {
-  var el = document.getElementById('batch-list');
-  if (!batchData.length) {
-    el.innerHTML='<div style="text-align:center;color:var(--text3);padding:20px;font-size:13px;">Belum ada gardu.</div>';
+  if (!garduList.length) {
+    container.innerHTML = '<div class="empty"><div class="empty-icon">🔍</div><div class="empty-msg">Tidak ada gardu yang sesuai filter</div></div>';
     return;
   }
-  el.innerHTML = batchData.map(function(d,i){
-    return '<div class="batch-item"><span><b style="font-family:monospace;">'+escH(d.noGardu)+'</b>'+(d.nama?' — <span style="color:var(--text2);">'+escH(d.nama)+'</span>':'')+'</span><button class="batch-item-del" onclick="hapusBatch('+i+')">✕</button></div>';
-  }).join('');
-}
 
-function hapusBatch(i){ batchData.splice(i,1); renderBatchList(); }
+  container.innerHTML = '<div class="qr-grid" id="qr-grid"></div>';
+  var grid = document.getElementById('qr-grid');
 
-function clearBatch() {
-  if (batchData.length && !confirm('Hapus semua '+batchData.length+' gardu?')) return;
-  batchData=[];
-  renderBatchList();
-  document.getElementById('qr-result-batch').innerHTML='';
-}
+  garduList.forEach(function(g) {
+    var noGardu   = g['NO_GARDU'];
+    var ulp       = g['ULP'] || '—';
+    var penyulang = g['PENYULANG'] || '—';
+    var daya      = g['KAPASITAS_KVA'] || '—';
+    var statusOp  = g['STATUS_OPERASIONAL'].toUpperCase();
+    var isAktif   = statusOp === 'AKTIF';
+    var url       = buildURL(noGardu);
+    var safeId    = 'qr_' + noGardu.replace(/[^a-zA-Z0-9]/g, '_');
 
-function bacaCSV(input) {
-  var file=input.files[0]; if(!file) return;
-  var reader=new FileReader();
-  reader.onload=function(e){
-    var lines=e.target.result.split('\n'); var added=0;
-    lines.forEach(function(line){
-      var parts=line.split(',');
-      var ng=(parts[0]||'').trim().toUpperCase().replace(/['"]/g,'');
-      var nm=(parts[1]||'').trim().replace(/['"]/g,'');
-      if (!ng||ng==='NO_GARDU'||ng==='NOGARDU') return;
-      if (batchData.some(function(d){return d.noGardu===ng;})) return;
-      batchData.push({noGardu:ng,nama:nm}); added++;
-    });
-    renderBatchList();
-    alert('✅ '+added+' gardu diimport.');
-    input.value='';
-  };
-  reader.readAsText(file);
-}
+    var card = document.createElement('div');
+    card.className = 'qr-card';
+    card.innerHTML =
+      '<div class="qr-canvas-wrap"><div id="' + safeId + '"></div></div>' +
+      '<div class="qr-info">' +
+        '<div class="qr-nogardu">' + esc(noGardu) + '</div>' +
+        '<div class="qr-ulp">' + esc(ulp) + '</div>' +
+        '<div class="qr-penyulang">Penyulang: ' + esc(penyulang) + '</div>' +
+        '<div class="qr-daya">Kapasitas: ' + esc(String(daya)) + ' kVA</div>' +
+        '<div class="qr-statusbadge"><span class="badge ' + (isAktif ? 'badge-aktif' : 'badge-nonaktif') + '">' + esc(statusOp) + '</span></div>' +
+      '</div>' +
+      '<div class="qr-card-actions no-print">' +
+        '<button class="btn btn-outline" onclick="lihatDetail(\'' + noGardu.replace(/'/g, "\\'") + '\')" title="Lihat QR besar & print">🔍 Detail</button>' +
+        '<button class="btn btn-blue" onclick="downloadSatu(\'' + noGardu.replace(/'/g, "\\'") + '\',\'' + safeId + '\')" title="Simpan sebagai PNG">⬇️</button>' +
+      '</div>';
+    grid.appendChild(card);
 
-function generateBatch() {
-  if (!batchData.length) { alert('Tambahkan gardu dulu!'); return; }
-  if (!(document.getElementById('base-url').value||'').trim()) { alert('Isi URL Aplikasi dulu!'); return; }
-  var size = parseInt(document.getElementById('batch-qr-size').value)||220;
-  var container = document.getElementById('qr-result-batch');
-  container.innerHTML='';
-  batchData.forEach(function(d){
-    var url=buildUrl(d.noGardu);
-    var wrap=document.createElement('div');
-    wrap.className='batch-qr-card';
-    wrap.style.width=(size+40)+'px';
-    var cv=document.createElement('canvas');
-    wrap.appendChild(cv);
-    var lbl=document.createElement('div'); lbl.className='qr-label'; lbl.textContent=d.noGardu;
-    wrap.appendChild(lbl);
-    if (d.nama) {
-      var sub=document.createElement('div'); sub.className='qr-sublabel';
-      sub.style.cssText='font-size:11px;color:var(--text2);margin-top:2px;word-wrap:break-word;max-width:'+size+'px;';
-      sub.textContent=d.nama; wrap.appendChild(sub);
-    }
-    var btn=document.createElement('button'); btn.className='btn btn-outline no-print';
-    btn.style.cssText='margin-top:10px;font-size:12px;padding:6px 12px;';
-    btn.textContent='⬇️ Download';
-    btn.onclick=(function(canvas,ng){return function(){dlCanvas(canvas,ng);};})(cv,d.noGardu);
-    wrap.appendChild(btn);
-    container.appendChild(wrap);
-    QRCode.toCanvas(cv,url,{width:size,margin:2,color:{dark:'#003B7B',light:'#ffffff'}},function(err){
-      if(err) console.error(err);
-    });
+    // Generate QR dengan delay agar DOM siap
+    setTimeout((function(id, u, noG) {
+      return function() {
+        try {
+          var qr = new QRCode(document.getElementById(id), {
+            text: u,
+            width: 140, height: 140,
+            colorDark: '#0A2D6B', colorLight: '#ffffff',
+            correctLevel: QRCode.CorrectLevel.M
+          });
+          qrInstances[noG] = { qr: qr, url: u, safeId: id };
+        } catch(e) {
+          console.warn('QR error', noG, e);
+        }
+      };
+    }(safeId, url, noGardu)), 0);
   });
-  container.scrollIntoView({behavior:'smooth',block:'start'});
 }
 
-function dlCanvas(cv,ng) {
-  var a=document.createElement('a');
-  a.download='QR-'+ng+'.png';
-  a.href=cv.toDataURL('image/png');
-  a.click();
+// ── Lihat Detail (Modal) ─────────────────────────────────────
+function lihatDetail(noGardu) {
+  var g = allGardu.filter(function(x) { return x['NO_GARDU'] === noGardu; })[0] || {};
+  var url = buildURL(noGardu);
+  modalGardu = noGardu;
+
+  document.getElementById('modal-nogardu').textContent = noGardu;
+  document.getElementById('modal-info').innerHTML =
+    '<b>ULP:</b> ' + esc(g['ULP'] || '—') + '<br>' +
+    '<b>Penyulang:</b> ' + esc(g['PENYULANG'] || '—') + '<br>' +
+    '<b>Kapasitas:</b> ' + esc(g['KAPASITAS_KVA'] || '—') + ' kVA<br>' +
+    '<b>Alamat:</b> ' + esc(g['ALAMAT'] || '—') + '<br>' +
+    '<b>Status:</b> ' + esc(g['STATUS_OPERASIONAL'] || 'AKTIF');
+  document.getElementById('modal-url').textContent = 'QR mengarah ke: ' + url;
+
+  var bigDiv = document.getElementById('modal-qr-big');
+  bigDiv.innerHTML = '';
+  if (modalQR) { try { modalQR.clear(); } catch(e){} modalQR = null; }
+  setTimeout(function() {
+    try {
+      modalQR = new QRCode(bigDiv, {
+        text: url, width: 200, height: 200,
+        colorDark: '#0A2D6B', colorLight: '#ffffff',
+        correctLevel: QRCode.CorrectLevel.M
+      });
+    } catch(e) { console.warn('Modal QR error:', e); }
+  }, 50);
+
+  document.getElementById('modal-detail').classList.add('open');
 }
 
-function escH(s) {
-  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+function tutupModal() {
+  document.getElementById('modal-detail').classList.remove('open');
 }
 
-// Simpan URL ke localStorage
-(function(){
-  var saved=localStorage.getItem('qr_base_url');
-  if (saved) { document.getElementById('base-url').value=saved; updatePreview(); }
-  document.getElementById('base-url').addEventListener('change',function(){
-    localStorage.setItem('qr_base_url',this.value);
-  });
-})();
+// ── Print Modal (single) ─────────────────────────────────────
+function printModal() {
+  var noGardu = modalGardu;
+  if (!noGardu) return;
+  var g = allGardu.filter(function(x) { return x['NO_GARDU'] === noGardu; })[0] || {};
+  var url = buildURL(noGardu);
+
+  var canvas = document.querySelector('#modal-qr-big canvas');
+  var imgSrc = canvas ? canvas.toDataURL() : '';
+
+  var win = window.open('', '_blank', 'width=400,height=620');
+  win.document.write('<!DOCTYPE html><html><head><title>QR ' + noGardu + '</title><style>');
+  win.document.write('*{box-sizing:border-box;}body{font-family:Arial,sans-serif;display:flex;flex-direction:column;align-items:center;justify-content:center;min-height:100vh;padding:20px;background:#fff;text-align:center;margin:0;}');
+  win.document.write('.logo{font-size:13px;color:#0A2D6B;font-weight:800;margin-bottom:4px;}');
+  win.document.write('.nogardu{font-family:monospace;font-size:22px;font-weight:900;color:#1048A8;margin:8px 0;}');
+  win.document.write('.info{font-size:11px;color:#3D5580;line-height:1.7;margin-bottom:8px;text-align:left;}');
+  win.document.write('.url{font-size:8px;color:#8499BB;word-break:break-all;background:#EEF4FF;padding:6px;border-radius:4px;margin-top:8px;}');
+  win.document.write('.border-box{border:2px solid #0A2D6B;border-radius:12px;padding:20px 24px;max-width:300px;margin:0 auto;}');
+  win.document.write('@media print{body{margin:0;}@page{size:A6;margin:8mm;}}');
+  win.document.write('</style></head><body>');
+  win.document.write('<div class="border-box">');
+  win.document.write('<div class="logo">⚡ PLN UP3 Jayapura</div>');
+  if (imgSrc) win.document.write('<img src="' + imgSrc + '" width="180" height="180" style="display:block;margin:8px auto;">');
+  win.document.write('<div class="nogardu">' + noGardu + '</div>');
+  win.document.write('<div class="info">');
+  win.document.write('<b>ULP:</b> ' + (g['ULP'] || '—') + '<br>');
+  win.document.write('<b>Penyulang:</b> ' + (g['PENYULANG'] || '—') + '<br>');
+  win.document.write('<b>Kapasitas:</b> ' + (g['KAPASITAS_KVA'] || '—') + ' kVA<br>');
+  win.document.write('<b>Status:</b> ' + (g['STATUS_OPERASIONAL'] || 'AKTIF'));
+  win.document.write('</div>');
+  win.document.write('<div class="url">Scan QR untuk detail gardu</div>');
+  win.document.write('</div>');
+  win.document.write('<script>window.onload=function(){window.print();setTimeout(function(){window.close();},1200);};<\/script>');
+  win.document.write('</body></html>');
+  win.document.close();
+}
+
+// ── Download PNG Single ───────────────────────────────────────
+function downloadSatu(noGardu, safeId) {
+  var canvas = document.querySelector('#' + safeId + ' canvas');
+  if (!canvas) { alert('QR belum siap, tunggu sebentar lalu coba lagi.'); return; }
+  var link = document.createElement('a');
+  link.download = 'QR_' + noGardu.replace(/[^a-zA-Z0-9\-]/g, '_') + '.png';
+  link.href = canvas.toDataURL('image/png');
+  link.click();
+}
+
+function downloadModal() {
+  var canvas = document.querySelector('#modal-qr-big canvas');
+  if (!canvas || !modalGardu) { alert('QR belum siap.'); return; }
+  var link = document.createElement('a');
+  link.download = 'QR_' + modalGardu.replace(/[^a-zA-Z0-9\-]/g, '_') + '.png';
+  link.href = canvas.toDataURL('image/png');
+  link.click();
+}
+
+// ── Print Semua ──────────────────────────────────────────────
+function printSemua() {
+  window.print();
+}
+
+// ── Download ZIP ─────────────────────────────────────────────
+function downloadSemua() {
+  if (!filteredGardu.length) { alert('Tidak ada QR yang dimuat.'); return; }
+
+  var btnDl         = document.getElementById('btn-dl-all');
+  var progressWrap  = document.getElementById('progress-wrap');
+  var progressFill  = document.getElementById('progress-fill');
+  var progressLabel = document.getElementById('progress-label');
+
+  btnDl.disabled = true;
+  btnDl.textContent = '⏳ Menyiapkan...';
+  progressWrap.style.display = 'block';
+  progressFill.style.width = '10%';
+  progressLabel.textContent = 'Mengumpulkan QR dari halaman...';
+  showStatus('⏳ Mengumpulkan ' + filteredGardu.length + ' QR ke dalam ZIP...', 'info');
+
+  // Tunggu agar semua canvas sudah ter-render
+  setTimeout(function() {
+    var zip = new JSZip();
+    var folder = zip.folder('QR_Gardu_PLN_UP3_Jayapura');
+    var missing = 0;
+    var total = filteredGardu.length;
+
+    filteredGardu.forEach(function(g, i) {
+      var noGardu = g['NO_GARDU'];
+      var safeId  = 'qr_' + noGardu.replace(/[^a-zA-Z0-9]/g, '_');
+      var canvas  = document.querySelector('#' + safeId + ' canvas');
+      if (!canvas) { missing++; return; }
+
+      var dataUrl  = canvas.toDataURL('image/png');
+      var base64   = dataUrl.split(',')[1];
+      var fileName = 'QR_' + noGardu.replace(/[^a-zA-Z0-9\-]/g, '_') + '.png';
+      folder.file(fileName, base64, { base64: true });
+
+      var pct = Math.round(((i + 1) / total) * 50);
+      progressFill.style.width = (10 + pct) + '%';
+      progressLabel.textContent = 'Mengumpulkan ' + (i + 1) + ' / ' + total + ' QR...';
+    });
+
+    progressFill.style.width = '65%';
+    progressLabel.textContent = 'Membuat file ZIP...';
+
+    zip.generateAsync({ type: 'blob' }, function(metadata) {
+      var pct = 65 + Math.round(metadata.percent * 0.35);
+      progressFill.style.width = pct + '%';
+      progressLabel.textContent = 'Mengkompresi ZIP... ' + Math.round(metadata.percent) + '%';
+    })
+    .then(function(content) {
+      var tanggal = new Date().toISOString().slice(0, 10);
+      saveAs(content, 'QR_Gardu_PLN_UP3_Jayapura_' + tanggal + '.zip');
+      progressFill.style.width = '100%';
+      progressLabel.textContent = '✅ Selesai! ' + (total - missing) + ' QR ter-download.';
+      showStatus(
+        '✅ ZIP berhasil! ' + (total - missing) + ' QR diunduh' +
+        (missing ? ' (' + missing + ' QR belum siap)' : '') + '.',
+        'ok'
+      );
+      setTimeout(function() {
+        progressWrap.style.display = 'none';
+        progressFill.style.width = '0%';
+      }, 3000);
+    })
+    .catch(function(err) {
+      showStatus('❌ Gagal membuat ZIP: ' + err.message, 'err');
+      progressWrap.style.display = 'none';
+    })
+    .finally(function() {
+      btnDl.disabled = false;
+      btnDl.textContent = '⬇️ Download ZIP';
+    });
+  }, 600);
+}
 </script>
 </body>
 </html>

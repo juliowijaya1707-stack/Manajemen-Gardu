@@ -1450,42 +1450,40 @@ function bukaMenuAdmin() {
 }
 
 function _tampilkanModalPinAdmin(s) {
-  // Supabase: verifikasi PIN user via fn_verify_token + tabel users.pin_hash
-  function cobaPinULP(judul) {
-    pinGarduBuffer = '';
-    _pinGarduCallback = null;
-    bukaModalPinGardu(judul, function(pin) {
-      apiGet({ action: 'verifyPin', token: s.token, pin: pin }, function(res) {
-        if (res && res.status === 'ok') {
-          tutupModalPinGardu();
-          _adminUlpVerified = true;
-          _tampilkanPanelAdmin(s);
-        } else {
-          // PIN salah — tampilkan error, izinkan coba lagi di modal yang sama
-          var errEl = document.getElementById('pin-gardu-error');
-          if (errEl) { errEl.textContent = '❌ PIN salah. Coba lagi.'; errEl.style.display = 'block'; }
-          pinGarduBuffer = '';
-          updatePinGarduDots();
-          // Set callback baru untuk percobaan berikutnya
-          _pinGarduCallback = function(pin2) {
-            apiGet({ action: 'verifyPin', token: s.token, pin: pin2 }, function(res2) {
-              if (res2 && res2.status === 'ok') {
-                tutupModalPinGardu();
-                _adminUlpVerified = true;
-                _tampilkanPanelAdmin(s);
-              } else {
-                var errEl2 = document.getElementById('pin-gardu-error');
-                if (errEl2) { errEl2.textContent = '❌ PIN salah. Coba lagi.'; errEl2.style.display = 'block'; }
-                pinGarduBuffer = '';
-                updatePinGarduDots();
-              }
-            });
-          };
+  // FIXED: gunakan callback loop agar retry PIN bisa tak terbatas
+  function _cobaPinCallback(pin) {
+    var errEl = document.getElementById('pin-gardu-error');
+    if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
+    // Tampilkan loading di dots
+    apiGet({ action: 'verifyPin', token: s.token, pin: pin }, function(res) {
+      if (res && res.status === 'ok') {
+        tutupModalPinGardu();
+        _adminUlpVerified = true;
+        _tampilkanPanelAdmin(s);
+      } else {
+        // PIN salah — reset buffer, tampilkan error, buka kembali modal dengan callback baru
+        var errEl2 = document.getElementById('pin-gardu-error');
+        if (errEl2) {
+          errEl2.textContent = '❌ ' + (res && res.message ? res.message : 'PIN salah. Coba lagi.');
+          errEl2.style.display = 'block';
         }
-      });
+        pinGarduBuffer = '';
+        updatePinGarduDots();
+        // Set ulang callback untuk percobaan berikutnya — modal tetap terbuka
+        _pinGarduCallback = _cobaPinCallback;
+      }
     });
   }
-  cobaPinULP('PIN Admin — ' + (s.ulp || 'ULP Anda'));
+
+  pinGarduBuffer = '';
+  _pinGarduCallback = null;
+  var errEl0 = document.getElementById('pin-gardu-error');
+  if (errEl0) { errEl0.style.display = 'none'; errEl0.textContent = ''; }
+  var titleEl = document.getElementById('pin-gardu-title');
+  if (titleEl) titleEl.textContent = 'PIN Admin — ' + (s.ulp || 'ULP Anda');
+  updatePinGarduDots();
+  document.getElementById('modal-pin-gardu').style.display = 'flex';
+  _pinGarduCallback = _cobaPinCallback;
 }
 
 function _tampilkanPanelAdmin(s) {
@@ -3966,7 +3964,7 @@ function renderRekap(d) {
     });
     html += '</div>';
     // Link ke spreadsheet lengkap
-    html += '<a href="'+SPREADSHEET_URL+'" target="_blank" rel="noopener" style="display:flex;align-items:center;justify-content:center;gap:8px;margin-top:var(--sp-xs);padding:clamp(10px,3vw,13px);background:var(--pln-bg);border:1.5px solid var(--pln-border);border-radius:var(--radius-sm);font-size:var(--fs-xs);color:var(--pln-biru2);font-weight:700;text-decoration:none;">📊 Lihat semua riwayat di Spreadsheet →</a>';
+    // Spreadsheet link dihapus (Supabase version)
   }
 
   // ── Section: Gardu Kritis ──────────────────────────────────
