@@ -1,20 +1,12 @@
 // ============================================================
-//  PLN UP3 JAYAPURA — Supabase API Layer  v2 (FIX)
+//  PLN UP3 JAYAPURA — Supabase API Layer  v3
 //  File: supabase-api.js
 //
-//  PERBAIKAN v2:
-//  1. _getRekap      → pakai RPC fn_get_rekap (bypass RLS)
-//  2. _verifyPin     → pakai RPC fn_verify_pin (sudah SECURITY DEFINER)
-//  3. _tambahGardu   → pakai RPC fn_tambah_gardu (bypass RLS write)
-//  4. _editGardu     → pakai RPC fn_edit_gardu (bypass RLS write)
-//  5. _setPin        → pakai RPC fn_set_pin_user (bypass RLS)
-//  6. _getDaftarUser → pakai RPC fn_get_daftar_user (bypass RLS)
-//  7. _hapusUser     → pakai RPC fn_hapus_user (bypass RLS)
-//  8. _tambahUser    → pakai RPC fn_tambah_user (bypass RLS)
-//  9. _editUser      → pakai RPC fn_edit_user (bypass RLS)
-//  10. _gantiPassword → pakai RPC fn_ganti_password (bypass RLS)
-//  11. Semua query ke tabel users/sessions dari browser
-//      → diganti ke RPC SECURITY DEFINER
+//  PERBAIKAN v3:
+//  1. _getExportRekap → pakai RPC fn_get_export_rekap (fix "Gagal memuat data export")
+//  2. _getGarduKritis → pakai RPC fn_get_gardu_kritis (fix gardu kritis kosong)
+//  3. _getRekap       → pakai RPC fn_get_rekap (sudah ada di v2, diperkuat)
+//  4. Semua RPC SECURITY DEFINER → bypass RLS dengan aman
 // ============================================================
 
 // ── KONFIGURASI ──────────────────────────────────────────────
@@ -115,15 +107,13 @@ async function _dispatch(action, p, signal) {
   }
 }
 
-// ── HELPER: verify token via RPC (SECURITY DEFINER) ──────────
-// PERBAIKAN: tidak lagi query langsung ke tabel sessions (diblokir RLS)
+// ── HELPER: verify token via RPC ─────────────────────────────
 async function _getUserFromToken(token) {
   if (!token) return null;
   try {
     var res = await sbRpc('fn_verify_token', { p_token: token });
     if (!res.ok) return null;
     var data = await res.json();
-    // fn_verify_token mengembalikan langsung objek JSONB
     if (!data || data.status !== 'ok') return null;
     return data;
   } catch(e) {
@@ -163,7 +153,6 @@ async function _verifyToken(p, signal) {
 }
 
 // ── DAFTAR GARDU ─────────────────────────────────────────────
-// gardu & inspeksi boleh SELECT via anon (ada RLS policy)
 async function _getDaftarGardu(p, signal) {
   var url = '/rest/v1/v_gardu_lengkap?select=*&order=no_gardu.asc&limit=5000';
   if (p && p.ulp) url += '&ulp=eq.' + encodeURIComponent(p.ulp);
@@ -257,14 +246,28 @@ async function _getTrenBeban(p, signal) {
   return { status:'ok', data: data };
 }
 
-// ── REKAP DASHBOARD ──────────────────────────────────────────
-// PERBAIKAN: pakai RPC fn_get_rekap agar bypass RLS pada view
+// ── REKAP DASHBOARD — pakai RPC fn_get_rekap ─────────────────
 async function _getRekap(p, signal) {
+  var ulpFilter = (p && p.ulp) ? p.ulp : null;
+
+  var res = await sbRpc('fn_get_rekap', { p_ulp: ulpFilter }, signal);
+  if (!res.ok) {
+    // Fallback ke query manual jika RPC gagal
+    return _getRekapManual(p, signal);
+  }
+  var data = await res.json();
+  if (!data || data.status !== 'ok') {
+    return _getRekapManual(p, signal);
+  }
+  return data;
+}
+
+// ── REKAP FALLBACK (query manual jika RPC gagal) ─────────────
+async function _getRekapManual(p, signal) {
   var ulpFilter = (p && p.ulp) ? p.ulp : null;
   var now = new Date();
   var bulanIni = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0');
 
-  // ── Step 1: Ambil semua gardu (dengan filter ULP jika ada) ──
   var garduUrl = '/rest/v1/gardu?select=no_gardu,ulp,status_operasional&limit=10000';
   if (ulpFilter) garduUrl += '&ulp=eq.' + encodeURIComponent(ulpFilter);
   var resGardu = await sbFetch(garduUrl, { signal: signal });
@@ -273,11 +276,8 @@ async function _getRekap(p, signal) {
   var totalGardu = garduRows.length;
   var aktif = garduRows.filter(function(g){ return (g.status_operasional||'').toUpperCase() === 'AKTIF'; }).length;
   var nonAktif = totalGardu - aktif;
-
-  // Buat set no_gardu untuk filter inspeksi
   var garduSet = new Set(garduRows.map(function(g){ return g.no_gardu; }));
 
-  // ── Step 2: Ambil data v_gardu_lengkap untuk last_inspeksi & overdue ──
   var vGarduUrl = '/rest/v1/v_gardu_lengkap?select=no_gardu,ulp,last_inspeksi_tgl,last_prosen&limit=10000';
   if (ulpFilter) vGarduUrl += '&ulp=eq.' + encodeURIComponent(ulpFilter);
   var resVGardu = await sbFetch(vGarduUrl, { signal: signal });
@@ -288,7 +288,6 @@ async function _getRekap(p, signal) {
   var perULP = {};
 
   vGarduRows.forEach(function(g){
-    // Per ULP counter
     var ulpKey = g.ulp || 'UNKNOWN';
     if (!perULP[ulpKey]) perULP[ulpKey] = { total: 0, inspeksi: 0, overdue: 0 };
     perULP[ulpKey].total++;
@@ -303,14 +302,12 @@ async function _getRekap(p, signal) {
       perULP[ulpKey].overdue++;
     }
 
-    // Beban
     var pb = parseFloat(g.last_prosen);
     if (isNaN(pb) || g.last_prosen == null) bNoData++;
     else if (pb > 80) bLebih++;
     else bNormal++;
   });
 
-  // Jika vGarduRows kosong tapi garduRows ada, gunakan garduRows untuk total
   if (vGarduRows.length === 0 && totalGardu > 0) {
     overdue90 = totalGardu;
     bNoData = totalGardu;
@@ -324,26 +321,16 @@ async function _getRekap(p, signal) {
 
   var belumInspeksi = totalGardu - sudahInspeksi;
 
-  // ── Step 3: Inspeksi bulan ini ──
-  var inspBulanUrl = '/rest/v1/inspeksi?select=id&tgl_ukur=gte.' + bulanIni + '-01&tgl_ukur=lte.' + bulanIni + '-31&limit=10000';
+  var inspBulanUrl = '/rest/v1/inspeksi?select=no_gardu&tgl_ukur=gte.' + bulanIni + '-01&tgl_ukur=lte.' + bulanIni + '-31&limit=10000';
   var resInspBulan = await sbFetch(inspBulanUrl, { signal: signal });
   var inspBulanRows = resInspBulan.ok ? await resInspBulan.json() : [];
-  // Filter ke gardu di ULP yang dipilih jika ada filter
-  var inspeksiBulanIni = inspBulanRows.length;
-  if (ulpFilter && garduSet.size > 0) {
-    // Perlu join — ambil no_gardu dari inspeksi bulan ini lalu filter
-    var inspBulanDetailUrl = '/rest/v1/inspeksi?select=no_gardu&tgl_ukur=gte.' + bulanIni + '-01&tgl_ukur=lte.' + bulanIni + '-31&limit=10000';
-    var resInspBulanDetail = await sbFetch(inspBulanDetailUrl, { signal: signal });
-    var inspBulanDetail = resInspBulanDetail.ok ? await resInspBulanDetail.json() : [];
-    inspeksiBulanIni = inspBulanDetail.filter(function(r){ return garduSet.has(r.no_gardu); }).length;
-  }
+  var inspeksiBulanIni = ulpFilter && garduSet.size > 0
+    ? inspBulanRows.filter(function(r){ return garduSet.has(r.no_gardu); }).length
+    : inspBulanRows.length;
 
-  // ── Step 4: 10 inspeksi terbaru (filter ULP jika ada) ──
   var terbaruUrl = '/rest/v1/inspeksi?select=no_gardu,tgl_ukur,jam_ukur,petugas,prosen,penyulang,alamat&order=tgl_ukur.desc,jam_ukur.desc&limit=50';
   var resTerbaru = await sbFetch(terbaruUrl, { signal: signal });
   var terbaruRows = resTerbaru.ok ? await resTerbaru.json() : [];
-
-  // Filter ke ULP yang relevan jika ada filter
   if (ulpFilter && garduSet.size > 0) {
     terbaruRows = terbaruRows.filter(function(r){ return garduSet.has(r.no_gardu); }).slice(0, 10);
   } else {
@@ -354,7 +341,7 @@ async function _getRekap(p, signal) {
     return {
       noGardu:   r.no_gardu  || '',
       tanggal:   r.tgl_ukur  || '',
-      jam:       r.jam_ukur  || '',
+      jam:       r.jam_ukur  ? String(r.jam_ukur).slice(0,5) : '',
       petugas:   r.petugas   || '',
       prosen:    r.prosen != null ? parseFloat(r.prosen) : null,
       penyulang: r.penyulang || '',
@@ -383,11 +370,22 @@ async function _getRekap(p, signal) {
   };
 }
 
-// ── GARDU KRITIS ─────────────────────────────────────────────
+// ── GARDU KRITIS — pakai RPC fn_get_gardu_kritis ─────────────
 async function _getGarduKritis(p, signal) {
+  var ulpFilter = (p && p.ulp) ? p.ulp : null;
+
+  // Coba pakai RPC dulu
+  var res = await sbRpc('fn_get_gardu_kritis', { p_ulp: ulpFilter }, signal);
+  if (res.ok) {
+    var data = await res.json();
+    if (data && data.status === 'ok') return data;
+  }
+
+  // Fallback ke query manual
   var resG = await sbFetch(
     '/rest/v1/v_gardu_lengkap?select=no_gardu,ulp,penyulang,last_prosen,last_inspeksi_tgl' +
-    '&last_prosen=gt.80&order=last_prosen.desc&limit=100',
+    '&last_prosen=gt.80&order=last_prosen.desc&limit=100' +
+    (ulpFilter ? '&ulp=eq.' + encodeURIComponent(ulpFilter) : ''),
     { signal: signal }
   );
   var bebanLebih = [];
@@ -404,10 +402,9 @@ async function _getGarduKritis(p, signal) {
     });
   }
 
-  var resO = await sbFetch(
-    '/rest/v1/v_gardu_lengkap?select=no_gardu,ulp,penyulang,last_inspeksi_tgl&order=no_gardu.asc',
-    { signal: signal }
-  );
+  var overdueUrl = '/rest/v1/v_gardu_lengkap?select=no_gardu,ulp,penyulang,last_inspeksi_tgl&order=no_gardu.asc';
+  if (ulpFilter) overdueUrl += '&ulp=eq.' + encodeURIComponent(ulpFilter);
+  var resO = await sbFetch(overdueUrl, { signal: signal });
   var overdue = [];
   if (resO.ok) {
     var rowsO = await resO.json();
@@ -431,13 +428,25 @@ async function _getGarduKritis(p, signal) {
   return { status:'ok', data: { bebanLebih: bebanLebih, overdue: overdue } };
 }
 
-// ── EXPORT REKAP ─────────────────────────────────────────────
+// ── EXPORT REKAP — pakai RPC fn_get_export_rekap ─────────────
 async function _getExportRekap(p, signal) {
+  var ulpFilter = (p && p.ulp) ? p.ulp : null;
+
+  // Coba pakai RPC dulu
+  var res = await sbRpc('fn_get_export_rekap', { p_ulp: ulpFilter }, signal);
+  if (res.ok) {
+    var rpcData = await res.json();
+    if (rpcData && rpcData.status === 'ok' && Array.isArray(rpcData.data)) {
+      return rpcData;
+    }
+  }
+
+  // Fallback ke query manual via view
   var url = '/rest/v1/v_gardu_lengkap?select=*&order=ulp.asc,no_gardu.asc';
-  if (p && p.ulp) url += '&ulp=eq.' + encodeURIComponent(p.ulp);
-  var res = await sbFetch(url, { signal: signal });
-  if (!res.ok) return { status:'error', message:'Gagal memuat data export.' };
-  var rows = await res.json();
+  if (ulpFilter) url += '&ulp=eq.' + encodeURIComponent(ulpFilter);
+  var resView = await sbFetch(url, { signal: signal });
+  if (!resView.ok) return { status:'error', message:'Gagal memuat data export.' };
+  var rows = await resView.json();
   var now = new Date();
 
   var data = rows.map(function(g){
@@ -459,7 +468,7 @@ async function _getExportRekap(p, signal) {
       status:     g.status_operasional || '',
       kepemilikan:g.status_kepemilikan || '',
       tglUkur:    g.last_inspeksi_tgl  || '',
-      jamUkur:    g.last_inspeksi_jam  || '',
+      jamUkur:    g.last_inspeksi_jam  ? String(g.last_inspeksi_jam).slice(0,5) : '',
       petugas:    g.last_inspeksi_petugas || '',
       prosen:     g.last_prosen != null ? String(g.last_prosen) : '',
       hariSejak:  hari,
@@ -470,7 +479,6 @@ async function _getExportRekap(p, signal) {
 }
 
 // ── VERIFY PIN ───────────────────────────────────────────────
-// PERBAIKAN: pakai RPC fn_verify_pin (SECURITY DEFINER) — bypass RLS
 async function _verifyPin(p, signal) {
   var session = await _getUserFromToken(p.token);
   if (!session) return { status:'error', message:'Sesi tidak valid.' };
@@ -490,7 +498,6 @@ async function _verifyPin(p, signal) {
 }
 
 // ── SET PIN ──────────────────────────────────────────────────
-// PERBAIKAN: pakai RPC fn_set_pin_user (bypass RLS)
 async function _setPin(p, signal) {
   var session = await _getUserFromToken(p.token);
   if (!session) return { status:'error', message:'Sesi tidak valid.' };
@@ -512,7 +519,6 @@ async function _setPin(p, signal) {
 }
 
 // ── TAMBAH GARDU ─────────────────────────────────────────────
-// PERBAIKAN: pakai RPC fn_tambah_gardu (bypass RLS write)
 async function _tambahGardu(p, signal) {
   var pinHash = await sha256(String(p.pin || '').trim());
   var ulpEnum = 'ULP ' + (p.ulp||'').replace(/^ULP\s*/i,'').trim().toUpperCase();
@@ -546,7 +552,6 @@ async function _tambahGardu(p, signal) {
 }
 
 // ── EDIT GARDU ───────────────────────────────────────────────
-// PERBAIKAN: pakai RPC fn_edit_gardu (bypass RLS write)
 async function _editGardu(p, signal) {
   var pinHash = await sha256(String(p.pin || '').trim());
   var ulpEnum = p.ulp
@@ -585,7 +590,6 @@ async function _editGardu(p, signal) {
 }
 
 // ── DAFTAR USER ──────────────────────────────────────────────
-// PERBAIKAN: pakai RPC (tabel users diblokir RLS untuk anon)
 async function _getDaftarUser(p, signal) {
   var session = await _getUserFromToken(p.token);
   if (!session || session.role !== 'superadmin')
@@ -626,7 +630,7 @@ async function _cariGardu(p, signal) {
   return { status:'ok', data: rows.map(_mapGarduRow) };
 }
 
-// ── HELPER: Map row gardu → format lama ──────────────────────
+// ── HELPER: Map row gardu ────────────────────────────────────
 function _mapGarduRow(g) {
   return {
     'NO_GARDU':           g.no_gardu  || '',
@@ -646,11 +650,11 @@ function _mapGarduRow(g) {
   };
 }
 
-// ── HELPER: Map row inspeksi → format lama ───────────────────
+// ── HELPER: Map row inspeksi ─────────────────────────────────
 function _mapInspeksiRow(r) {
   var flat = {
     'TGLUKUR':       r.tgl_ukur   || '',
-    'JAM UKUR':      r.jam_ukur   || '',
+    'JAM UKUR':      r.jam_ukur   ? String(r.jam_ukur).slice(0,5) : '',
     'PETUGAS':       r.petugas    || '',
     'DAYA':          r.daya       != null ? String(r.daya)       : '',
     'FASA':          r.fasa       != null ? String(r.fasa)       : '',
@@ -751,7 +755,6 @@ async function _getRekapGardu(p, signal) {
 }
 
 // ── TAMBAH USER ──────────────────────────────────────────────
-// PERBAIKAN: pakai RPC (tabel users diblokir RLS untuk anon)
 async function _tambahUser(p, signal) {
   var session = await _getUserFromToken(p.token);
   if (!session || session.role !== 'superadmin')
@@ -819,7 +822,6 @@ async function _gantiPassword(p, signal) {
 }
 
 // ── VERIFY ULP PIN ───────────────────────────────────────────
-// PERBAIKAN: pakai RPC fn_verify_ulp_pin (bypass RLS)
 async function _verifyULPPin(p, signal) {
   var pinHash   = await sha256(String(p.pin||'').trim());
   var ulpTarget = (p.ulp||'').trim().toUpperCase();
@@ -840,7 +842,6 @@ async function _verifyULPPin(p, signal) {
 async function _toggleStatus(p, signal) {
   var session = await _getUserFromToken(p.token);
   if (!session) return { status:'error', message:'Sesi tidak valid.' };
-  // Status update → anon tidak bisa PATCH (RLS). Pakai RPC.
   var res = await sbRpc('fn_toggle_status_gardu', {
     p_token:     p.token,
     p_no_gardu:  p.noGardu,
@@ -862,4 +863,4 @@ window.apiGet = function(params, cb) {
 };
 
 window._sbApiReady = true;
-console.log('[Supabase API v2] Layer aktif. URL:', SUPABASE_URL);
+console.log('[Supabase API v3] Layer aktif. URL:', SUPABASE_URL);
