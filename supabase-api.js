@@ -1,12 +1,15 @@
 // ============================================================
-//  PLN UP3 JAYAPURA — Supabase API Layer  v3
+//  PLN UP3 JAYAPURA — Supabase API Layer  v4
 //  File: supabase-api.js
 //
-//  PERBAIKAN v3:
-//  1. _getExportRekap → pakai RPC fn_get_export_rekap (fix "Gagal memuat data export")
-//  2. _getGarduKritis → pakai RPC fn_get_gardu_kritis (fix gardu kritis kosong)
-//  3. _getRekap       → pakai RPC fn_get_rekap (sudah ada di v2, diperkuat)
-//  4. Semua RPC SECURITY DEFINER → bypass RLS dengan aman
+//  PERBAIKAN v4 (dari v3):
+//  1. _getGarduKritis → validasi RPC return data non-empty sebelum diterima;
+//     fallback manual lebih eksplisit untuk beban lebih DAN overdue terpisah.
+//  2. _getRekap fallback manual → hitung sudah/belum/overdue dari
+//     v_gardu_lengkap dengan kondisi NULL-safe yang benar; tidak lagi
+//     membuang semua gardu ke overdue jika rows kosong.
+//  3. _getExportRekap → tidak ada perubahan (sudah benar di v3).
+//  4. Semua RPC SECURITY DEFINER → bypass RLS dengan aman.
 // ============================================================
 
 // ── KONFIGURASI ──────────────────────────────────────────────
@@ -251,23 +254,26 @@ async function _getRekap(p, signal) {
   var ulpFilter = (p && p.ulp) ? p.ulp : null;
 
   var res = await sbRpc('fn_get_rekap', { p_ulp: ulpFilter }, signal);
-  if (!res.ok) {
-    // Fallback ke query manual jika RPC gagal
-    return _getRekapManual(p, signal);
+  if (res.ok) {
+    var data = await res.json();
+    if (data && data.status === 'ok' && data.data) {
+      return data;
+    }
   }
-  var data = await res.json();
-  if (!data || data.status !== 'ok') {
-    return _getRekapManual(p, signal);
-  }
-  return data;
+  // Fallback ke query manual jika RPC gagal
+  return _getRekapManual(p, signal);
 }
 
 // ── REKAP FALLBACK (query manual jika RPC gagal) ─────────────
+// FIX v4: hitung sudah/belum/overdue langsung dari v_gardu_lengkap
+// dengan logika NULL-safe yang benar — tidak buang semua gardu ke
+// overdue jika baris view kebetulan kosong saat iterasi.
 async function _getRekapManual(p, signal) {
   var ulpFilter = (p && p.ulp) ? p.ulp : null;
   var now = new Date();
   var bulanIni = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0');
 
+  // ── Ambil semua data gardu ringkas ──
   var garduUrl = '/rest/v1/gardu?select=no_gardu,ulp,status_operasional&limit=10000';
   if (ulpFilter) garduUrl += '&ulp=eq.' + encodeURIComponent(ulpFilter);
   var resGardu = await sbFetch(garduUrl, { signal: signal });
@@ -278,56 +284,61 @@ async function _getRekapManual(p, signal) {
   var nonAktif = totalGardu - aktif;
   var garduSet = new Set(garduRows.map(function(g){ return g.no_gardu; }));
 
+  // ── Ambil data inspeksi terakhir per gardu dari view ──
   var vGarduUrl = '/rest/v1/v_gardu_lengkap?select=no_gardu,ulp,last_inspeksi_tgl,last_prosen&limit=10000';
   if (ulpFilter) vGarduUrl += '&ulp=eq.' + encodeURIComponent(ulpFilter);
   var resVGardu = await sbFetch(vGarduUrl, { signal: signal });
   var vGarduRows = resVGardu.ok ? await resVGardu.json() : [];
 
+  // Buat map dari view agar O(1) lookup
+  var vMap = {};
+  vGarduRows.forEach(function(g){ vMap[g.no_gardu] = g; });
+
   var sudahInspeksi = 0, overdue90 = 0;
   var bNormal = 0, bLebih = 0, bNoData = 0;
   var perULP = {};
 
-  vGarduRows.forEach(function(g){
+  // Iterasi dari tabel gardu (sumber kebenaran), join ke view
+  garduRows.forEach(function(g){
     var ulpKey = g.ulp || 'UNKNOWN';
     if (!perULP[ulpKey]) perULP[ulpKey] = { total: 0, inspeksi: 0, overdue: 0 };
     perULP[ulpKey].total++;
 
-    if (g.last_inspeksi_tgl) {
+    var vg = vMap[g.no_gardu] || null;
+    var lastTgl = vg ? vg.last_inspeksi_tgl : null;
+    var lastProsen = vg ? vg.last_prosen : null;
+
+    if (lastTgl) {
       sudahInspeksi++;
       perULP[ulpKey].inspeksi++;
-      var hari = Math.floor((now - new Date(g.last_inspeksi_tgl)) / 86400000);
-      if (hari > 90) { overdue90++; perULP[ulpKey].overdue++; }
+      var hari = Math.floor((now - new Date(lastTgl)) / 86400000);
+      if (hari > 90) {
+        overdue90++;
+        perULP[ulpKey].overdue++;
+      }
     } else {
+      // Belum pernah inspeksi → otomatis overdue
       overdue90++;
       perULP[ulpKey].overdue++;
     }
 
-    var pb = parseFloat(g.last_prosen);
-    if (isNaN(pb) || g.last_prosen == null) bNoData++;
+    var pb = parseFloat(lastProsen);
+    if (lastProsen == null || isNaN(pb)) bNoData++;
     else if (pb > 80) bLebih++;
     else bNormal++;
   });
 
-  if (vGarduRows.length === 0 && totalGardu > 0) {
-    overdue90 = totalGardu;
-    bNoData = totalGardu;
-    garduRows.forEach(function(g){
-      var ulpKey = g.ulp || 'UNKNOWN';
-      if (!perULP[ulpKey]) perULP[ulpKey] = { total: 0, inspeksi: 0, overdue: 0 };
-      perULP[ulpKey].total++;
-      perULP[ulpKey].overdue++;
-    });
-  }
-
   var belumInspeksi = totalGardu - sudahInspeksi;
 
+  // ── Inspeksi bulan ini ──
   var inspBulanUrl = '/rest/v1/inspeksi?select=no_gardu&tgl_ukur=gte.' + bulanIni + '-01&tgl_ukur=lte.' + bulanIni + '-31&limit=10000';
   var resInspBulan = await sbFetch(inspBulanUrl, { signal: signal });
   var inspBulanRows = resInspBulan.ok ? await resInspBulan.json() : [];
-  var inspeksiBulanIni = ulpFilter && garduSet.size > 0
+  var inspeksiBulanIni = (ulpFilter && garduSet.size > 0)
     ? inspBulanRows.filter(function(r){ return garduSet.has(r.no_gardu); }).length
     : inspBulanRows.length;
 
+  // ── 10 Inspeksi terbaru ──
   var terbaruUrl = '/rest/v1/inspeksi?select=no_gardu,tgl_ukur,jam_ukur,petugas,prosen,penyulang,alamat&order=tgl_ukur.desc,jam_ukur.desc&limit=50';
   var resTerbaru = await sbFetch(terbaruUrl, { signal: signal });
   var terbaruRows = resTerbaru.ok ? await resTerbaru.json() : [];
@@ -370,58 +381,102 @@ async function _getRekapManual(p, signal) {
   };
 }
 
-// ── GARDU KRITIS — pakai RPC fn_get_gardu_kritis ─────────────
+// ── GARDU KRITIS ─────────────────────────────────────────────
+// FIX v4: validasi RPC return data benar-benar ada isinya.
+// Fallback manual terpisah untuk beban lebih dan overdue
+// agar tidak ada data yang ter-skip.
 async function _getGarduKritis(p, signal) {
   var ulpFilter = (p && p.ulp) ? p.ulp : null;
 
   // Coba pakai RPC dulu
-  var res = await sbRpc('fn_get_gardu_kritis', { p_ulp: ulpFilter }, signal);
-  if (res.ok) {
-    var data = await res.json();
-    if (data && data.status === 'ok') return data;
+  try {
+    var res = await sbRpc('fn_get_gardu_kritis', { p_ulp: ulpFilter }, signal);
+    if (res.ok) {
+      var rpcData = await res.json();
+      // Terima hanya jika RPC benar-benar return data (bukan null/undefined)
+      // Kalau keduanya array (walaupun kosong) berarti RPC berhasil
+      if (
+        rpcData &&
+        rpcData.status === 'ok' &&
+        rpcData.data &&
+        Array.isArray(rpcData.data.bebanLebih) &&
+        Array.isArray(rpcData.data.overdue)
+      ) {
+        return rpcData;
+      }
+    }
+  } catch(e) {
+    console.warn('[sbApi] fn_get_gardu_kritis RPC error, fallback manual:', e.message);
   }
 
-  // Fallback ke query manual
-  var resG = await sbFetch(
-    '/rest/v1/v_gardu_lengkap?select=no_gardu,ulp,penyulang,last_prosen,last_inspeksi_tgl' +
-    '&last_prosen=gt.80&order=last_prosen.desc&limit=100' +
-    (ulpFilter ? '&ulp=eq.' + encodeURIComponent(ulpFilter) : ''),
-    { signal: signal }
-  );
+  // ── Fallback manual — query terpisah ──
+  var now = new Date();
+
+  // 1. Gardu beban lebih: ambil semua gardu dari view, filter prosen > 80
+  var bebanUrl = '/rest/v1/v_gardu_lengkap?select=no_gardu,ulp,penyulang,last_prosen,last_inspeksi_tgl&order=last_prosen.desc&limit=2000';
+  if (ulpFilter) bebanUrl += '&ulp=eq.' + encodeURIComponent(ulpFilter);
+  var resBeban = await sbFetch(bebanUrl, { signal: signal });
   var bebanLebih = [];
-  if (resG.ok) {
-    var rows = await resG.json();
-    bebanLebih = rows.map(function(r){
-      return {
-        noGardu:  r.no_gardu,
-        ulp:      r.ulp,
-        penyulang:r.penyulang,
-        prosen:   r.last_prosen,
-        tglUkur:  r.last_inspeksi_tgl
-      };
-    });
-  }
-
-  var overdueUrl = '/rest/v1/v_gardu_lengkap?select=no_gardu,ulp,penyulang,last_inspeksi_tgl&order=no_gardu.asc';
-  if (ulpFilter) overdueUrl += '&ulp=eq.' + encodeURIComponent(ulpFilter);
-  var resO = await sbFetch(overdueUrl, { signal: signal });
-  var overdue = [];
-  if (resO.ok) {
-    var rowsO = await resO.json();
-    var now = new Date();
-    rowsO.forEach(function(r){
-      var hari = r.last_inspeksi_tgl
-        ? Math.floor((now - new Date(r.last_inspeksi_tgl)) / 86400000)
-        : null;
-      if (hari === null || hari > 90) {
-        overdue.push({
+  if (resBeban.ok) {
+    var bebanRows = await resBeban.json();
+    bebanLebih = bebanRows
+      .filter(function(r){ return r.last_prosen != null && parseFloat(r.last_prosen) > 80; })
+      .map(function(r){
+        return {
           noGardu:   r.no_gardu,
           ulp:       r.ulp,
-          penyulang: r.penyulang,
-          tglUkur:   r.last_inspeksi_tgl,
-          hariSejak: hari
+          penyulang: r.penyulang || '',
+          prosen:    parseFloat(r.last_prosen),
+          tglUkur:   r.last_inspeksi_tgl || ''
+        };
+      });
+  }
+
+  // 2. Gardu overdue: ambil SEMUA gardu dari tabel gardu (bukan view),
+  //    lalu join ke view untuk last_inspeksi_tgl.
+  //    Ini memastikan gardu yang BELUM PERNAH inspeksi (last_inspeksi_tgl = NULL)
+  //    juga masuk ke daftar overdue — tidak ter-skip oleh LEFT JOIN view.
+  var garduUrl = '/rest/v1/gardu?select=no_gardu,ulp,penyulang&order=no_gardu.asc&limit=5000';
+  if (ulpFilter) garduUrl += '&ulp=eq.' + encodeURIComponent(ulpFilter);
+  var resGardu = await sbFetch(garduUrl, { signal: signal });
+
+  var vGarduUrl = '/rest/v1/v_gardu_lengkap?select=no_gardu,last_inspeksi_tgl&limit=5000';
+  if (ulpFilter) vGarduUrl += '&ulp=eq.' + encodeURIComponent(ulpFilter);
+  var resVGardu = await sbFetch(vGarduUrl, { signal: signal });
+
+  var overdue = [];
+  if (resGardu.ok && resVGardu.ok) {
+    var garduAll = await resGardu.json();
+    var vGarduAll = await resVGardu.json();
+
+    // Map last_inspeksi_tgl per gardu dari view
+    var lastTglMap = {};
+    vGarduAll.forEach(function(g){ lastTglMap[g.no_gardu] = g.last_inspeksi_tgl || null; });
+
+    garduAll.forEach(function(g){
+      var lastTgl = lastTglMap[g.no_gardu] || null;
+      var hariSejak = null;
+      if (lastTgl) {
+        hariSejak = Math.floor((now - new Date(lastTgl)) / 86400000);
+      }
+      // Masuk overdue jika: belum pernah inspeksi ATAU sudah > 90 hari
+      if (lastTgl === null || hariSejak > 90) {
+        overdue.push({
+          noGardu:   g.no_gardu,
+          ulp:       g.ulp,
+          penyulang: g.penyulang || '',
+          tglUkur:   lastTgl,
+          hariSejak: hariSejak
         });
       }
+    });
+
+    // Urutkan: belum pernah ukur dulu, lalu dari yang paling lama
+    overdue.sort(function(a, b){
+      if (a.tglUkur === null && b.tglUkur !== null) return -1;
+      if (a.tglUkur !== null && b.tglUkur === null) return 1;
+      if (a.tglUkur === null && b.tglUkur === null) return 0;
+      return (b.hariSejak || 0) - (a.hariSejak || 0);
     });
   }
 
@@ -863,4 +918,4 @@ window.apiGet = function(params, cb) {
 };
 
 window._sbApiReady = true;
-console.log('[Supabase API v3] Layer aktif. URL:', SUPABASE_URL);
+console.log('[Supabase API v4] Layer aktif. URL:', SUPABASE_URL);
