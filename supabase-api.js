@@ -1,5 +1,5 @@
 // ============================================================
-//  PLN UP3 JAYAPURA — Supabase API Layer  v5
+//  PLN UP3 JAYAPURA — Supabase API Layer  v6
 //  File: supabase-api.js
 //
 //  PERBAIKAN v5:
@@ -353,25 +353,72 @@ async function _getRekapManual(p, signal) {
   };
 }
 
+// ── HELPER: Fetch inspeksi terbaru per gardu dengan pagination ─
+// Supabase REST default 1000 rows, pakai Range header untuk paginate.
+// Ambil select minimal (no_gardu, tgl_ukur, prosen) ordered desc,
+// build lastInspMap dari batch. Stop saat semua gardu sudah ter-cover
+// atau tidak ada data lagi.
+async function _fetchAllInspeksiForKritis(signal) {
+  var PAGE = 1000;
+  var offset = 0;
+  var allRows = [];
+  var maxPages = 20; // safety: max 20.000 baris
+  for (var i = 0; i < maxPages; i++) {
+    var url = '/rest/v1/inspeksi?select=no_gardu,tgl_ukur,prosen'
+      + '&order=tgl_ukur.desc'
+      + '&limit=' + PAGE + '&offset=' + offset;
+    var res;
+    try {
+      res = await sbFetch(url, {
+        signal: signal,
+        headers: { 'Range-Unit': 'items', 'Range': offset + '-' + (offset + PAGE - 1) }
+      });
+    } catch(e) {
+      return null;
+    }
+    if (!res.ok && res.status !== 206) return null;
+    var batch = await res.json();
+    if (!Array.isArray(batch) || batch.length === 0) break;
+    allRows = allRows.concat(batch);
+    if (batch.length < PAGE) break; // last page
+    offset += PAGE;
+  }
+  return allRows;
+}
+
 // ── GARDU KRITIS ─────────────────────────────────────────────
-// FIX v5: Query langsung ke tabel gardu + inspeksi (bukan view)
-// lalu join dan filter di JS — paling reliable
+// FIX v6: Pakai RPC fn_get_gardu_kritis (server-side LATERAL JOIN).
+// RPC jauh lebih cepat karena hanya return gardu kritis saja, bukan
+// seluruh tabel inspeksi. Fallback ke query REST dengan pagination
+// benar jika RPC gagal.
 async function _getGarduKritis(p, signal) {
   var ulpFilter = (p && p.ulp) ? p.ulp : null;
 
-  // Step 1: Ambil semua gardu (filter ULP jika ada)
+  // ── Coba RPC dulu (paling efisien) ──────────────────────────
+  try {
+    var rpcRes = await sbRpc('fn_get_gardu_kritis', { p_ulp: ulpFilter || null }, signal);
+    if (rpcRes.ok) {
+      var rpcData = await rpcRes.json();
+      if (rpcData && rpcData.status === 'ok' && rpcData.data) {
+        return { status: 'ok', data: rpcData.data };
+      }
+    }
+  } catch(e) {
+    console.warn('[sbApi] fn_get_gardu_kritis RPC failed, falling back:', e.message);
+  }
+
+  // ── Fallback: query tabel langsung dengan pagination benar ───
+  // Step 1: Ambil semua gardu
   var garduUrl = '/rest/v1/gardu?select=no_gardu,ulp,penyulang&limit=10000';
   if (ulpFilter) garduUrl += '&ulp=eq.' + encodeURIComponent(ulpFilter);
   var resGardu = await sbFetch(garduUrl, { signal: signal });
   if (!resGardu.ok) return { status:'error', message:'Gagal memuat data gardu.' };
   var garduRows = await resGardu.json();
 
-  // Step 2: Ambil inspeksi terbaru per gardu
-  // Ambil semua inspeksi, ambil 1 terbaru per no_gardu di JS
-  var inspUrl = '/rest/v1/inspeksi?select=no_gardu,tgl_ukur,prosen&order=tgl_ukur.desc&limit=50000';
-  var resInsp = await sbFetch(inspUrl, { signal: signal });
-  if (!resInsp.ok) return { status:'error', message:'Gagal memuat data inspeksi.' };
-  var inspRows = await resInsp.json();
+  // Step 2: Ambil inspeksi dengan pagination (Supabase max 1000/request)
+  // Gunakan Range header agar tidak terpotong di 1000 baris
+  var inspRows = await _fetchAllInspeksiForKritis(signal);
+  if (inspRows === null) return { status:'error', message:'Gagal memuat data inspeksi.' };
 
   // Build map: no_gardu -> inspeksi terbaru
   var lastInspMap = {};
@@ -431,10 +478,51 @@ async function _getGarduKritis(p, signal) {
   };
 }
 
-// ── EXPORT REKAP — query langsung gardu + inspeksi ───────────
+// ── HELPER: Fetch inspeksi untuk export dengan pagination ──────
+async function _fetchAllInspeksiForExport(signal) {
+  var PAGE = 1000;
+  var offset = 0;
+  var allRows = [];
+  var maxPages = 20;
+  for (var i = 0; i < maxPages; i++) {
+    var url = '/rest/v1/inspeksi?select=no_gardu,tgl_ukur,jam_ukur,petugas,prosen,r_total,s_total,t_total,n_total'
+      + '&order=tgl_ukur.desc'
+      + '&limit=' + PAGE + '&offset=' + offset;
+    var res;
+    try {
+      res = await sbFetch(url, {
+        signal: signal,
+        headers: { 'Range-Unit': 'items', 'Range': offset + '-' + (offset + PAGE - 1) }
+      });
+    } catch(e) { return null; }
+    if (!res.ok && res.status !== 206) return null;
+    var batch = await res.json();
+    if (!Array.isArray(batch) || batch.length === 0) break;
+    allRows = allRows.concat(batch);
+    if (batch.length < PAGE) break;
+    offset += PAGE;
+  }
+  return allRows;
+}
+
+// ── EXPORT REKAP — RPC first, fallback REST dengan pagination ─
 async function _getExportRekap(p, signal) {
   var ulpFilter = (p && p.ulp) ? p.ulp : null;
 
+  // ── Coba RPC fn_get_export_rekap dulu ───────────────────────
+  try {
+    var rpcRes = await sbRpc('fn_get_export_rekap', { p_ulp: ulpFilter || null }, signal);
+    if (rpcRes.ok) {
+      var rpcData = await rpcRes.json();
+      if (rpcData && rpcData.status === 'ok' && Array.isArray(rpcData.data)) {
+        return { status: 'ok', data: rpcData.data };
+      }
+    }
+  } catch(e) {
+    console.warn('[sbApi] fn_get_export_rekap RPC failed, falling back:', e.message);
+  }
+
+  // ── Fallback: query REST dengan pagination ───────────────────
   // Step 1: Ambil semua gardu
   var garduUrl = '/rest/v1/gardu?select=no_gardu,unitup,ulp,penyulang,alamat,kapasitas_kva,tipe,status_operasional,status_kepemilikan&order=ulp.asc,no_gardu.asc&limit=10000';
   if (ulpFilter) garduUrl += '&ulp=eq.' + encodeURIComponent(ulpFilter);
@@ -443,10 +531,9 @@ async function _getExportRekap(p, signal) {
   var garduRows = await resGardu.json();
   if (!Array.isArray(garduRows)) return { status:'error', message:'Data gardu tidak valid.' };
 
-  // Step 2: Ambil inspeksi terbaru per gardu
-  var inspUrl = '/rest/v1/inspeksi?select=no_gardu,tgl_ukur,jam_ukur,petugas,prosen,r_total,s_total,t_total,n_total&order=tgl_ukur.desc&limit=50000';
-  var resInsp = await sbFetch(inspUrl, { signal: signal });
-  var inspRows = resInsp.ok ? await resInsp.json() : [];
+  // Step 2: Ambil inspeksi dengan pagination benar (bukan limit=50000 yang terpotong)
+  var inspRows = await _fetchAllInspeksiForExport(signal);
+  if (inspRows === null) inspRows = []; // export tetap jalan meski inspeksi gagal
 
   // Build map: no_gardu -> inspeksi terbaru
   var lastInspMap = {};
@@ -863,4 +950,4 @@ window.apiGet = function(params, cb) {
 };
 
 window._sbApiReady = true;
-console.log('[Supabase API v4] Layer aktif. URL:', SUPABASE_URL);
+console.log('[Supabase API v6] Layer aktif. URL:', SUPABASE_URL);
