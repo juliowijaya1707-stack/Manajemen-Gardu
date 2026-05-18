@@ -1,27 +1,14 @@
 // ============================================================
-//  PLN UP3 JAYAPURA — Supabase API Layer  v8
+//  PLN UP3 JAYAPURA — Supabase API Layer  v6
 //  File: supabase-api.js
 //
-//  FIX v8 (dari v7):
-//  ─────────────────────────────────────────────────────────
-//  ROOT CAUSE FIX: _getGarduKritis infinite-loading
-//  ─ RPC fn_get_gardu_kritis DIHAPUS dari pipeline utama.
-//    Alasannya: RPC mengembalikan JSONB array kosong saat
-//    tidak ada data, lalu fallback ke v_gardu_lengkap —
-//    namun kondisi break-nya salah sehingga tidak pernah
-//    melanjutkan ke strategi 2.
-//
-//  ─ Strategi BARU (satu langkah, seperti Apps Script):
-//    1. Fetch v_gardu_lengkap (sudah punya last_prosen,
-//       last_inspeksi_tgl dari JOIN LATERAL ke inspeksi).
-//    2. Hitung beban >80% dan overdue >90 hari di sisi
-//       klien persis seperti getGarduKritis() di Apps Script.
-//    3. Tidak ada fallback loop, tidak ada race condition.
-//
-//  ─ _getRekap: fallback manual diperbaiki agar tidak
-//    crash saat data kosong.
-//  ─ parseRpcJson: handle null/undefined lebih aman.
-//  ─ Timeout naik ke 90 detik untuk operasi besar.
+//  PERBAIKAN v6:
+//  1. _getGarduKritis → pakai v_gardu_lengkap (1 query, tidak timeout)
+//     Tidak lagi fetch 50k rows inspeksi. View sudah LATERAL JOIN terbaru.
+//  2. _getExportRekap → pakai v_gardu_lengkap + batch fetch inspeksi
+//     per no_gardu (bukan dump 50k rows)
+//  3. Timeout naik ke 60s untuk aksi berat (kritis, export, rekap)
+//  4. Error handler gardu kritis tidak silent (spinner tidak stuck)
 // ============================================================
 
 // ── KONFIGURASI ──────────────────────────────────────────────
@@ -42,9 +29,9 @@ function sbFetch(path, opts) {
   var headers = Object.assign({
     'apikey':        SUPABASE_ANON,
     'Authorization': 'Bearer ' + SUPABASE_ANON,
-    'Content-Type':  'application/json'
+    'Content-Type':  'application/json',
+    'Prefer':        opts.prefer || ''
   }, opts.headers || {});
-  if (opts.prefer) headers['Prefer'] = opts.prefer;
   return fetch(SUPABASE_URL + path, {
     method:  opts.method  || 'GET',
     headers: headers,
@@ -62,38 +49,19 @@ function sbRpc(funcName, params, signal) {
   });
 }
 
-// ── RPC JSON parser ──────────────────────────────────────────
-// Supabase RETURNS JSONB bisa wrap dalam:
-//   [{status:'ok',...}]              → ambil [0]
-//   [{fn_name: {status:'ok',...}}]   → ambil [0][fn_name]
-//   {status:'ok',...}                → pakai langsung
-function parseRpcJson(raw) {
-  if (!raw) return { status: 'error', message: 'Response kosong.' };
-  if (Array.isArray(raw)) {
-    if (!raw.length) return { status: 'error', message: 'Response array kosong.' };
-    var first = raw[0];
-    if (first && typeof first === 'object') {
-      var keys = Object.keys(first);
-      if (keys.length === 1 && first[keys[0]] && typeof first[keys[0]] === 'object') {
-        return first[keys[0]];
-      }
-      return first;
-    }
-    return { status: 'error', message: 'Response tidak valid.' };
-  }
-  return raw;
-}
-
 // ── apiCall wrapper ──────────────────────────────────────────
+// Timeout: 60s untuk aksi berat (kritis, export, rekap), 30s lainnya
+var _HEAVY_ACTIONS = { getGarduKritis:1, getExportRekap:1, getRekap:1, getDaftarGardu:1 };
 function apiCall(action, params, cb) {
   var controller = new AbortController();
   var done = false;
+  var timeoutMs = _HEAVY_ACTIONS[action] ? 60000 : 30000;
   var timer = setTimeout(function(){
     if (done) return;
     done = true;
     controller.abort();
-    cb({ status: 'error', message: 'Koneksi timeout. Periksa jaringan lalu coba lagi.' });
-  }, 90000);
+    cb({ status:'error', message:'Koneksi timeout. Periksa jaringan lalu coba lagi.' });
+  }, timeoutMs);
 
   function finish(result) {
     if (done) return;
@@ -104,20 +72,18 @@ function apiCall(action, params, cb) {
 
   _dispatch(action, params, controller.signal)
     .then(finish)
-    .catch(function(err) {
+    .catch(function(err){
       if (done) return;
-      finish({
-        status: 'error',
+      finish({ status:'error',
         message: err.name === 'AbortError'
           ? 'Koneksi timeout. Periksa jaringan lalu coba lagi.'
-          : 'Gagal menghubungi server. (' + err.message + ')'
-      });
+          : 'Gagal menghubungi server. (' + err.message + ')' });
     });
 }
 
 // ── Router ───────────────────────────────────────────────────
 async function _dispatch(action, p, signal) {
-  switch (action) {
+  switch(action) {
     case 'loginUser':        return _login(p, signal);
     case 'verifyToken':      return _verifyToken(p, signal);
     case 'getDaftarGardu':   return _getDaftarGardu(p, signal);
@@ -142,18 +108,17 @@ async function _dispatch(action, p, signal) {
     case 'gantiPassword':    return _gantiPassword(p, signal);
     case 'verifyULPPin':     return _verifyULPPin(p, signal);
     case 'toggleStatus':     return _toggleStatus(p, signal);
-    default: return { status: 'error', message: 'Action tidak dikenali: ' + action };
+    default: return { status:'error', message:'Action tidak dikenali: '+action };
   }
 }
 
-// ── HELPER: verify token ─────────────────────────────────────
+// ── HELPER: verify token via RPC ─────────────────────────────
 async function _getUserFromToken(token) {
   if (!token) return null;
   try {
     var res = await sbRpc('fn_verify_token', { p_token: token });
     if (!res.ok) return null;
-    var raw = await res.json();
-    var data = parseRpcJson(raw);
+    var data = await res.json();
     if (!data || data.status !== 'ok') return null;
     return data;
   } catch(e) {
@@ -169,15 +134,14 @@ async function _login(p, signal) {
     p_username:      String(p.username || '').trim(),
     p_password_hash: pwHash
   }, signal);
-  if (!res.ok) return { status: 'error', message: 'Server error ' + res.status };
-  var raw = await res.json();
-  var data = parseRpcJson(raw);
+  if (!res.ok) return { status:'error', message:'Server error '+res.status };
+  var data = await res.json();
   if (!data || data.status !== 'ok')
-    return { status: 'error', message: (data && data.message) || 'Login gagal.' };
+    return { status:'error', message: data.message || 'Login gagal.' };
   return {
     status: 'ok',
     token:  data.token,
-    user: {
+    user:   {
       username: data.user.username,
       nama:     data.user.nama,
       role:     data.user.role,
@@ -189,8 +153,8 @@ async function _login(p, signal) {
 // ── VERIFY TOKEN ─────────────────────────────────────────────
 async function _verifyToken(p, signal) {
   var data = await _getUserFromToken(p.token);
-  if (!data) return { status: 'error', message: 'Sesi tidak valid.' };
-  return { status: 'ok', user: data };
+  if (!data) return { status:'error', message:'Sesi tidak valid.' };
+  return { status:'ok', user: data };
 }
 
 // ── DAFTAR GARDU ─────────────────────────────────────────────
@@ -200,31 +164,31 @@ async function _getDaftarGardu(p, signal) {
   var res = await sbFetch(url, { signal: signal });
   if (!res.ok) {
     var errTxt = await res.text().catch(function(){ return res.status; });
-    return { status: 'error', message: 'Gagal memuat daftar gardu (' + res.status + '): ' + errTxt };
+    return { status:'error', message:'Gagal memuat daftar gardu ('+res.status+'): '+errTxt };
   }
   var rows = await res.json();
-  var data = rows.map(function(g) {
+  var data = rows.map(function(g){
     return {
-      'NO_GARDU':           g.no_gardu  || '',
-      'ULP':                g.ulp       || '',
-      'UNITUP':             g.unitup    || '',
-      'PENYULANG':          g.penyulang || '',
-      'ALAMAT':             g.alamat    || '',
-      'KAPASITAS_KVA':      g.kapasitas_kva != null ? String(g.kapasitas_kva) : '',
-      'TIPE':               g.tipe      || '',
-      'STATUS_OPERASIONAL': g.status_operasional || '',
-      'STATUS_KEPEMILIKAN': g.status_kepemilikan || '',
-      'MEREK_TRAFO':        g.merek_trafo || '',
-      '_lastInspeksi':      g.last_inspeksi_tgl  || '',
-      '_lastPetugas':       g.last_inspeksi_petugas || '',
-      '_lastBeban':         g.last_prosen != null ? String(g.last_prosen) : '',
-      '_totalInspeksi':     g.total_inspeksi || 0,
-      'LATITUDE':           g.latitude  || '',
-      'LONGITUDE':          g.longitude || '',
-      'KETERANGAN':         g.keterangan || ''
+      'NO_GARDU':            g.no_gardu || '',
+      'ULP':                 g.ulp      || '',
+      'UNITUP':              g.unitup   || '',
+      'PENYULANG':           g.penyulang|| '',
+      'ALAMAT':              g.alamat   || '',
+      'KAPASITAS_KVA':       g.kapasitas_kva || '',
+      'TIPE':                g.tipe     || '',
+      'STATUS_OPERASIONAL':  g.status_operasional || '',
+      'STATUS_KEPEMILIKAN':  g.status_kepemilikan || '',
+      'MEREK_TRAFO':         g.merek_trafo || '',
+      '_lastInspeksi':       g.last_inspeksi_tgl  || '',
+      '_lastPetugas':        g.last_inspeksi_petugas || '',
+      '_lastBeban':          g.last_prosen != null ? String(g.last_prosen) : '',
+      '_totalInspeksi':      g.total_inspeksi || 0,
+      'LATITUDE':            g.latitude  || '',
+      'LONGITUDE':           g.longitude || '',
+      'KETERANGAN':          g.keterangan|| ''
     };
   });
-  return { status: 'ok', data: data, _generatedAt: new Date().toLocaleTimeString('id-ID') };
+  return { status:'ok', data: data, _generatedAt: new Date().toLocaleTimeString('id-ID') };
 }
 
 // ── DETAIL GARDU + RIWAYAT ───────────────────────────────────
@@ -234,10 +198,10 @@ async function _getDetailLengkap(p, signal) {
     '/rest/v1/gardu?no_gardu=eq.' + encodeURIComponent(noGardu) + '&limit=1',
     { signal: signal }
   );
-  if (!resG.ok) return { status: 'error', message: 'Gagal memuat data gardu.' };
+  if (!resG.ok) return { status:'error', message:'Gagal memuat data gardu.' };
   var garduArr = await resG.json();
   if (!garduArr || !garduArr.length)
-    return { status: 'error', message: 'Gardu tidak ditemukan: ' + noGardu };
+    return { status:'error', message:'Gardu tidak ditemukan: '+noGardu };
   var g = garduArr[0];
   var resI = await sbFetch(
     '/rest/v1/inspeksi?no_gardu=eq.' + encodeURIComponent(noGardu) +
@@ -259,11 +223,11 @@ async function _getDetailGardu(p, signal) {
     '/rest/v1/gardu?no_gardu=eq.' + encodeURIComponent(noGardu) + '&limit=1',
     { signal: signal }
   );
-  if (!res.ok) return { status: 'error', message: 'Gagal memuat data gardu.' };
+  if (!res.ok) return { status:'error', message:'Gagal memuat data gardu.' };
   var arr = await res.json();
   if (!arr || !arr.length)
-    return { status: 'error', message: 'Gardu tidak ditemukan: ' + noGardu };
-  return { status: 'ok', data: _mapGarduRow(arr[0]) };
+    return { status:'error', message:'Gardu tidak ditemukan: '+noGardu };
+  return { status:'ok', data: _mapGarduRow(arr[0]) };
 }
 
 // ── TREN BEBAN ───────────────────────────────────────────────
@@ -274,39 +238,35 @@ async function _getTrenBeban(p, signal) {
     '&select=tgl_ukur,prosen&order=tgl_ukur.asc&limit=100',
     { signal: signal }
   );
-  if (!res.ok) return { status: 'error', message: 'Gagal memuat tren beban.' };
+  if (!res.ok) return { status:'error', message:'Gagal memuat tren beban.' };
   var rows = await res.json();
   var data = rows
     .filter(function(r){ return r.prosen != null; })
     .map(function(r){ return { tgl: r.tgl_ukur, prosen: parseFloat(r.prosen) }; });
-  return { status: 'ok', data: data };
+  return { status:'ok', data: data };
 }
 
 // ── REKAP DASHBOARD ──────────────────────────────────────────
 async function _getRekap(p, signal) {
   var ulpFilter = (p && p.ulp) ? p.ulp : null;
-
-  // Coba RPC fn_get_rekap dulu
+  // Coba RPC dulu
   try {
-    var res = await sbRpc('fn_get_rekap', { p_ulp: ulpFilter || null }, signal);
+    var res = await sbRpc('fn_get_rekap', { p_ulp: ulpFilter }, signal);
     if (res.ok) {
-      var raw = await res.json();
-      var data = parseRpcJson(raw);
-      if (data && data.status === 'ok' && data.data) return data;
+      var data = await res.json();
+      if (data && data.status === 'ok') return data;
     }
-  } catch(e) {
-    console.warn('[sbApi] fn_get_rekap RPC failed, fallback to manual:', e.message);
-  }
-
-  // Fallback manual — query v_gardu_lengkap
+  } catch(e) {}
+  // Fallback manual
   return _getRekapManual(p, signal);
 }
 
 async function _getRekapManual(p, signal) {
   var ulpFilter = (p && p.ulp) ? p.ulp : null;
   var now = new Date();
-  var bulanIni = now.getFullYear() + '-' + String(now.getMonth() + 1).padStart(2, '0');
+  var bulanIni = now.getFullYear() + '-' + String(now.getMonth()+1).padStart(2,'0');
 
+  // Ambil semua dari v_gardu_lengkap
   var vGarduUrl = '/rest/v1/v_gardu_lengkap?select=no_gardu,ulp,status_operasional,last_inspeksi_tgl,last_prosen&limit=10000';
   if (ulpFilter) vGarduUrl += '&ulp=eq.' + encodeURIComponent(ulpFilter);
   var resVGardu = await sbFetch(vGarduUrl, { signal: signal });
@@ -318,12 +278,12 @@ async function _getRekapManual(p, signal) {
   var bNormal = 0, bLebih = 0, bNoData = 0;
   var perULP = {};
 
-  vGarduRows.forEach(function(g) {
+  vGarduRows.forEach(function(g){
     var ulpKey = g.ulp || 'UNKNOWN';
-    if (!perULP[ulpKey]) perULP[ulpKey] = { total: 0, inspeksi: 0, overdue: 0 };
+    if (!perULP[ulpKey]) perULP[ulpKey] = { total:0, inspeksi:0, overdue:0 };
     perULP[ulpKey].total++;
 
-    if ((g.status_operasional || '').toUpperCase() === 'AKTIF') aktif++;
+    if ((g.status_operasional||'').toUpperCase() === 'AKTIF') aktif++;
     else nonAktif++;
 
     if (g.last_inspeksi_tgl) {
@@ -363,11 +323,11 @@ async function _getRekapManual(p, signal) {
   }
   terbaruRows = terbaruRows.slice(0, 10);
 
-  var terbaru = terbaruRows.map(function(r) {
+  var terbaru = terbaruRows.map(function(r){
     return {
       noGardu:   r.no_gardu  || '',
       tanggal:   r.tgl_ukur  || '',
-      jam:       r.jam_ukur  ? String(r.jam_ukur).slice(0, 5) : '',
+      jam:       r.jam_ukur  ? String(r.jam_ukur).slice(0,5) : '',
       petugas:   r.petugas   || '',
       prosen:    r.prosen != null ? parseFloat(r.prosen) : null,
       penyulang: r.penyulang || '',
@@ -396,209 +356,185 @@ async function _getRekapManual(p, signal) {
   };
 }
 
-// ═══════════════════════════════════════════════════════════════
-//  _getGarduKritis — REWRITE TOTAL v8
-//
-//  Logika SAMA dengan Apps Script getGarduKritis():
-//  1. Fetch semua gardu dari v_gardu_lengkap (view ini sudah
-//     JOIN LATERAL ke tabel inspeksi → punya last_prosen &
-//     last_inspeksi_tgl tanpa query tambahan).
-//  2. Filter sisi klien:
-//     • bebanLebih : last_prosen > 80
-//     • overdue    : last_inspeksi_tgl NULL atau > 90 hari lalu
-//  3. Sort & return. SELESAI. Tidak ada RPC, tidak ada loop,
-//     tidak ada kondisi yang bisa macet.
-// ═══════════════════════════════════════════════════════════════
+// ── GARDU KRITIS ─────────────────────────────────────────────
+// FIX v6: Gunakan v_gardu_lengkap yang sudah punya last_inspeksi_tgl
+// dan last_prosen langsung — 1 query, tidak timeout, tidak perlu join
 async function _getGarduKritis(p, signal) {
-  var ulpFilter = (p && p.ulp) ? String(p.ulp).trim() : null;
-  var now = new Date();
+  var ulpFilter = (p && p.ulp) ? p.ulp : null;
 
-  try {
-    // Satu query ke view — view sudah JOIN LATERAL, tidak perlu inspeksi terpisah
-    var url = '/rest/v1/v_gardu_lengkap?select=no_gardu,ulp,penyulang,alamat,kapasitas_kva,last_inspeksi_tgl,last_prosen,status_operasional&order=no_gardu.asc&limit=10000';
-    if (ulpFilter) url += '&ulp=eq.' + encodeURIComponent(ulpFilter);
+  // v_gardu_lengkap sudah join LATERAL ke inspeksi terbaru per gardu
+  var url = '/rest/v1/v_gardu_lengkap?select=no_gardu,ulp,penyulang,last_inspeksi_tgl,last_prosen&limit=10000';
+  if (ulpFilter) url += '&ulp=eq.' + encodeURIComponent(ulpFilter);
 
-    var res = await sbFetch(url, { signal: signal });
-    if (!res.ok) {
-      var errTxt = await res.text().catch(function(){ return String(res.status); });
-      return { status: 'error', message: 'Gagal memuat data gardu (' + res.status + '): ' + errTxt };
-    }
-
-    var rows = await res.json();
-    if (!Array.isArray(rows)) {
-      return { status: 'error', message: 'Response v_gardu_lengkap bukan array.' };
-    }
-
-    var bebanLebih = [];
-    var overdue    = [];
-
-    rows.forEach(function(g) {
-      var prosen    = (g.last_prosen != null) ? parseFloat(g.last_prosen) : null;
-      var tglUkur   = g.last_inspeksi_tgl || null;  // format: 'YYYY-MM-DD' atau null
-
-      // Hitung hari sejak inspeksi terakhir (sama persis dengan Apps Script)
-      var hariSejak = null;
-      if (tglUkur) {
-        hariSejak = Math.floor((now - new Date(tglUkur)) / 86400000);
-      }
-
-      // ── Gardu Beban Lebih (prosen > 80%) ──
-      if (prosen !== null && !isNaN(prosen) && prosen > 80) {
-        bebanLebih.push({
-          noGardu:   g.no_gardu   || '',
-          ulp:       g.ulp        || '',
-          penyulang: g.penyulang  || '',
-          alamat:    g.alamat     || '',
-          daya:      g.kapasitas_kva != null ? String(g.kapasitas_kva) : '',
-          prosen:    prosen,
-          tglUkur:   tglUkur || ''
-        });
-      }
-
-      // ── Gardu Overdue (>90 hari atau belum pernah inspeksi) ──
-      if (hariSejak === null || hariSejak > 90) {
-        overdue.push({
-          noGardu:   g.no_gardu   || '',
-          ulp:       g.ulp        || '',
-          penyulang: g.penyulang  || '',
-          alamat:    g.alamat     || '',
-          daya:      g.kapasitas_kva != null ? String(g.kapasitas_kva) : '',
-          tglUkur:   tglUkur || '',
-          hariSejak: hariSejak  // null = belum pernah
-        });
-      }
-    });
-
-    // Sort: beban lebih → tertinggi dulu; overdue → terlama dulu (null paling atas)
-    bebanLebih.sort(function(a, b) { return b.prosen - a.prosen; });
-    overdue.sort(function(a, b) {
-      if (a.hariSejak === null && b.hariSejak !== null) return -1;
-      if (a.hariSejak !== null && b.hariSejak === null) return 1;
-      if (a.hariSejak === null && b.hariSejak === null) return 0;
-      return b.hariSejak - a.hariSejak;
-    });
-
-    console.log('[sbApi v8] getGarduKritis: ' + rows.length + ' gardu diproses. '
-      + 'Beban lebih: ' + bebanLebih.length + ', Overdue: ' + overdue.length);
-
-    return {
-      status: 'ok',
-      data: {
-        bebanLebih: bebanLebih,
-        overdue:    overdue
-      }
-    };
-  } catch(e) {
-    console.error('[sbApi] _getGarduKritis error:', e);
-    return { status: 'error', message: 'Gagal memuat data kritis: ' + e.message };
+  var res = await sbFetch(url, { signal: signal });
+  if (!res.ok) {
+    var errTxt = await res.text().catch(function(){ return res.status; });
+    return { status:'error', message:'Gagal memuat data gardu kritis ('+res.status+'): '+errTxt };
   }
+  var rows = await res.json();
+  if (!Array.isArray(rows)) return { status:'error', message:'Data tidak valid dari server.' };
+
+  var now        = new Date();
+  var bebanLebih = [];
+  var overdue    = [];
+
+  rows.forEach(function(g){
+    var tglUkur   = g.last_inspeksi_tgl || null;
+    var prosen    = g.last_prosen != null ? parseFloat(g.last_prosen) : null;
+    var hariSejak = tglUkur
+      ? Math.floor((now - new Date(tglUkur)) / 86400000)
+      : null;
+
+    if (prosen !== null && !isNaN(prosen) && prosen > 80) {
+      bebanLebih.push({
+        noGardu:   g.no_gardu,
+        ulp:       g.ulp,
+        penyulang: g.penyulang || '',
+        prosen:    prosen,
+        tglUkur:   tglUkur || ''
+      });
+    }
+
+    if (hariSejak === null || hariSejak > 90) {
+      overdue.push({
+        noGardu:   g.no_gardu,
+        ulp:       g.ulp,
+        penyulang: g.penyulang || '',
+        tglUkur:   tglUkur || '',
+        hariSejak: hariSejak
+      });
+    }
+  });
+
+  bebanLebih.sort(function(a, b){ return b.prosen - a.prosen; });
+  overdue.sort(function(a, b){
+    if (a.hariSejak === null && b.hariSejak !== null) return -1;
+    if (a.hariSejak !== null && b.hariSejak === null) return 1;
+    if (a.hariSejak === null && b.hariSejak === null) return 0;
+    return b.hariSejak - a.hariSejak;
+  });
+
+  return {
+    status: 'ok',
+    data: { bebanLebih: bebanLebih, overdue: overdue }
+  };
 }
 
-// ── EXPORT REKAP ─────────────────────────────────────────────
+// ── EXPORT REKAP — pakai v_gardu_lengkap untuk last_inspeksi + prosen ──
 async function _getExportRekap(p, signal) {
   var ulpFilter = (p && p.ulp) ? p.ulp : null;
 
-  // Coba RPC fn_get_export_rekap
-  try {
-    var rpcRes = await sbRpc('fn_get_export_rekap', { p_ulp: ulpFilter || null }, signal);
-    if (rpcRes.ok) {
-      var rpcRaw = await rpcRes.json();
-      var rpcData = parseRpcJson(rpcRaw);
-      if (rpcData && rpcData.status === 'ok' && Array.isArray(rpcData.data) && rpcData.data.length > 0) {
-        return { status: 'ok', data: rpcData.data };
+  // v_gardu_lengkap sudah punya semua kolom gardu + last_inspeksi_tgl + last_prosen
+  // Untuk export kita butuh tambahan: petugas, r/s/t/n_total dari inspeksi terakhir
+  // Ambil v_gardu_lengkap dulu, lalu fetch detail inspeksi hanya untuk kolom tambahan
+
+  var garduUrl = '/rest/v1/v_gardu_lengkap?select=no_gardu,unitup,ulp,penyulang,alamat,kapasitas_kva,tipe,status_operasional,status_kepemilikan,last_inspeksi_tgl,last_inspeksi_petugas,last_prosen&order=ulp.asc,no_gardu.asc&limit=10000';
+  if (ulpFilter) garduUrl += '&ulp=eq.' + encodeURIComponent(ulpFilter);
+
+  var resGardu = await sbFetch(garduUrl, { signal: signal });
+  if (!resGardu.ok) {
+    var errTxt = await resGardu.text().catch(function(){ return resGardu.status; });
+    return { status:'error', message:'Gagal memuat data gardu ('+resGardu.status+'): '+errTxt };
+  }
+  var garduRows = await resGardu.json();
+  if (!Array.isArray(garduRows)) return { status:'error', message:'Data gardu tidak valid.' };
+
+  // Fetch inspeksi terbaru per gardu — tapi hanya kolom yang dibutuhkan untuk export
+  // (jam_ukur, r_total, s_total, t_total, n_total, thd_r/s/t)
+  // Gunakan limit rasional: max 5000 (1 per gardu cukup kalau DB punya max ~2k gardu)
+  // Filter ULP via no_gardu set agar tidak ambil data ULP lain
+  var noGarduList = garduRows.map(function(g){ return g.no_gardu; });
+  var lastInspMap = {};
+
+  // Fetch inspeksi dibagi batch 500 no_gardu agar tidak terlalu panjang URL
+  var BATCH = 500;
+  for (var bi = 0; bi < noGarduList.length; bi += BATCH) {
+    var batch = noGarduList.slice(bi, bi + BATCH);
+    // Supabase supports in.(val1,val2,...) filter
+    var inFilter = batch.map(function(v){ return encodeURIComponent(v); }).join(',');
+    var inspUrl = '/rest/v1/inspeksi?select=no_gardu,tgl_ukur,jam_ukur,petugas,prosen,r_total,s_total,t_total,n_total,thd_r,thd_s,thd_t' +
+      '&no_gardu=in.(' + batch.map(function(v){ return v; }).join(',') + ')' +
+      '&order=tgl_ukur.desc,jam_ukur.desc&limit=' + (batch.length * 5);
+    var resInsp = await sbFetch(inspUrl, { signal: signal });
+    if (resInsp.ok) {
+      var inspRows = await resInsp.json();
+      if (Array.isArray(inspRows)) {
+        inspRows.forEach(function(r){
+          if (!r.no_gardu) return;
+          if (!lastInspMap[r.no_gardu]) {
+            lastInspMap[r.no_gardu] = r; // order desc, first = latest
+          }
+        });
       }
     }
-  } catch(e) {
-    console.warn('[sbApi] fn_get_export_rekap RPC failed:', e.message);
   }
 
-  // Fallback: v_gardu_lengkap
-  var garduUrl = '/rest/v1/v_gardu_lengkap?select=no_gardu,unitup,ulp,penyulang,alamat,kapasitas_kva,tipe,status_operasional,status_kepemilikan,last_inspeksi_tgl,last_inspeksi_jam,last_inspeksi_petugas,last_prosen&order=ulp.asc,no_gardu.asc&limit=10000';
-  if (ulpFilter) garduUrl += '&ulp=eq.' + encodeURIComponent(ulpFilter);
-  var resGardu = await sbFetch(garduUrl, { signal: signal });
-  if (!resGardu.ok) return { status: 'error', message: 'Gagal memuat data gardu (' + resGardu.status + ').' };
-  var garduRows = await resGardu.json();
-  if (!Array.isArray(garduRows)) return { status: 'error', message: 'Data gardu tidak valid.' };
-
-  // Ambil inspeksi terbaru untuk r/s/t/n total
-  var lastInspFull = {};
-  var PAGE2 = 1000;
-  for (var pi = 0; pi < 15; pi++) {
-    var iUrl2 = '/rest/v1/inspeksi?select=no_gardu,tgl_ukur,jam_ukur,petugas,prosen,r_total,s_total,t_total,n_total'
-      + '&order=tgl_ukur.desc&limit=' + PAGE2 + '&offset=' + (pi * PAGE2);
-    var resI2 = await sbFetch(iUrl2, { signal: signal });
-    if (!resI2.ok) break;
-    var batch2 = await resI2.json();
-    if (!Array.isArray(batch2) || batch2.length === 0) break;
-    batch2.forEach(function(r) {
-      if (r.no_gardu && !lastInspFull[r.no_gardu]) lastInspFull[r.no_gardu] = r;
-    });
-    var coveredExport = garduRows.every(function(g){ return lastInspFull[g.no_gardu]; });
-    if (coveredExport || batch2.length < PAGE2) break;
-  }
-
-  var now2 = new Date();
-  var data = garduRows.map(function(g) {
-    var last      = lastInspFull[g.no_gardu] || null;
-    var tglUkur   = g.last_inspeksi_tgl || (last ? last.tgl_ukur : '') || '';
-    var jamStr    = g.last_inspeksi_jam
-      ? String(g.last_inspeksi_jam).slice(0, 5)
-      : (last && last.jam_ukur ? String(last.jam_ukur).slice(0, 5) : '');
-    var petugas   = g.last_inspeksi_petugas || (last ? (last.petugas || '') : '');
-    var prosen    = g.last_prosen != null ? parseFloat(g.last_prosen)
-      : (last && last.prosen != null ? parseFloat(last.prosen) : null);
-    var hariSejak = tglUkur ? Math.floor((now2 - new Date(tglUkur)) / 86400000) : null;
-    var ket = !tglUkur                    ? 'BELUM INSPEKSI'
-      : hariSejak > 90                    ? 'OVERDUE'
-      : prosen !== null && prosen > 80    ? 'BEBAN LEBIH'
+  var now  = new Date();
+  var data = garduRows.map(function(g){
+    var last      = lastInspMap[g.no_gardu] || null;
+    // Prefer data from inspMap for freshness; fallback to view columns
+    var tglUkur   = (last && last.tgl_ukur) ? last.tgl_ukur : (g.last_inspeksi_tgl || '');
+    var prosen    = (last && last.prosen != null) ? parseFloat(last.prosen)
+                  : (g.last_prosen != null) ? parseFloat(g.last_prosen) : null;
+    var petugas   = (last && last.petugas) ? last.petugas : (g.last_inspeksi_petugas || '');
+    var hariSejak = tglUkur
+      ? Math.floor((now - new Date(tglUkur)) / 86400000)
+      : null;
+    var ket = !tglUkur                         ? 'BELUM INSPEKSI'
+      : hariSejak > 90                         ? 'OVERDUE'
+      : prosen !== null && prosen > 80         ? 'BEBAN LEBIH'
       : 'OK';
+    var jamStr = '';
+    if (last && last.jam_ukur) jamStr = String(last.jam_ukur).slice(0, 5);
     return {
-      noGardu:     g.no_gardu    || '',
-      ulp:         g.ulp         || '',
-      unitup:      g.unitup      || '',
-      penyulang:   g.penyulang   || '',
-      alamat:      g.alamat      || '',
-      daya:        g.kapasitas_kva != null ? String(g.kapasitas_kva) : '',
-      tipe:        g.tipe        || '',
-      status:      g.status_operasional || '',
-      kepemilikan: g.status_kepemilikan || '',
-      tglUkur:     tglUkur,
-      jamUkur:     jamStr,
-      petugas:     petugas,
-      prosen:      prosen !== null ? String(prosen) : '',
-      rTotal:      last && last.r_total != null ? String(last.r_total) : '',
-      sTotal:      last && last.s_total != null ? String(last.s_total) : '',
-      tTotal:      last && last.t_total != null ? String(last.t_total) : '',
-      nTotal:      last && last.n_total != null ? String(last.n_total) : '',
-      hariSejak:   hariSejak,
-      keterangan:  ket
+      noGardu:    g.no_gardu    || '',
+      ulp:        g.ulp         || '',
+      unitup:     g.unitup      || '',
+      penyulang:  g.penyulang   || '',
+      alamat:     g.alamat      || '',
+      daya:       g.kapasitas_kva != null ? String(g.kapasitas_kva) : '',
+      tipe:       g.tipe        || '',
+      status:     g.status_operasional || '',
+      kepemilikan:g.status_kepemilikan || '',
+      tglUkur:    tglUkur,
+      jamUkur:    jamStr,
+      petugas:    petugas,
+      prosen:     prosen !== null ? String(prosen) : '',
+      rTotal:     last && last.r_total != null ? String(last.r_total) : '',
+      sTotal:     last && last.s_total != null ? String(last.s_total) : '',
+      tTotal:     last && last.t_total != null ? String(last.t_total) : '',
+      nTotal:     last && last.n_total != null ? String(last.n_total) : '',
+      thdR:       last && last.thd_r   != null ? String(last.thd_r)   : '',
+      thdS:       last && last.thd_s   != null ? String(last.thd_s)   : '',
+      thdT:       last && last.thd_t   != null ? String(last.thd_t)   : '',
+      hariSejak:  hariSejak,
+      keterangan: ket
     };
   });
 
-  return { status: 'ok', data: data };
+  return { status:'ok', data: data };
 }
 
 // ── VERIFY PIN ───────────────────────────────────────────────
 async function _verifyPin(p, signal) {
   var session = await _getUserFromToken(p.token);
-  if (!session) return { status: 'error', message: 'Sesi tidak valid.' };
+  if (!session) return { status:'error', message:'Sesi tidak valid.' };
   var pinHash = await sha256(String(p.pin || '').trim());
   var res = await sbRpc('fn_verify_pin', {
     p_username: session.username,
     p_pin_hash: pinHash
   }, signal);
-  if (!res.ok) return { status: 'error', message: 'Gagal verifikasi PIN (' + res.status + ').' };
-  var raw = await res.json();
-  var data = parseRpcJson(raw);
+  if (!res.ok) return { status:'error', message:'Gagal verifikasi PIN ('+res.status+').' };
+  var data = await res.json();
   if (!data || data.status !== 'ok')
-    return { status: 'error', message: (data && data.message) ? data.message : 'PIN salah.' };
-  return { status: 'ok', message: 'PIN benar.' };
+    return { status:'error', message: (data && data.message) ? data.message : 'PIN salah.' };
+  return { status:'ok', message:'PIN benar.' };
 }
 
 // ── SET PIN ──────────────────────────────────────────────────
 async function _setPin(p, signal) {
   var session = await _getUserFromToken(p.token);
-  if (!session) return { status: 'error', message: 'Sesi tidak valid.' };
+  if (!session) return { status:'error', message:'Sesi tidak valid.' };
   var pwHash  = await sha256(String(p.password || '').trim());
   var pinHash = await sha256(String(p.pinBaru  || '').trim());
   var res = await sbRpc('fn_set_pin_user', {
@@ -606,120 +542,116 @@ async function _setPin(p, signal) {
     p_password_hash: pwHash,
     p_pin_hash_baru: pinHash
   }, signal);
-  if (!res.ok) return { status: 'error', message: 'Gagal menyimpan PIN (' + res.status + ').' };
-  var raw = await res.json();
-  var data = parseRpcJson(raw);
+  if (!res.ok) return { status:'error', message:'Gagal menyimpan PIN ('+res.status+').' };
+  var data = await res.json();
   if (!data || data.status !== 'ok')
-    return { status: 'error', message: (data && data.message) ? data.message : 'Gagal menyimpan PIN.' };
-  return { status: 'ok', message: 'PIN berhasil disimpan.' };
+    return { status:'error', message: (data && data.message) ? data.message : 'Gagal menyimpan PIN.' };
+  return { status:'ok', message:'PIN berhasil disimpan.' };
 }
 
 // ── TAMBAH GARDU ─────────────────────────────────────────────
 async function _tambahGardu(p, signal) {
   var pinHash = await sha256(String(p.pin || '').trim());
-  var ulpEnum = 'ULP ' + (p.ulp || '').replace(/^ULP\s*/i, '').trim().toUpperCase();
+  var ulpEnum = 'ULP ' + (p.ulp||'').replace(/^ULP\s*/i,'').trim().toUpperCase();
   var res = await sbRpc('fn_tambah_gardu', {
     p_token:               p.token,
     p_pin_hash:            pinHash,
-    p_no_gardu:            (p.noGardu || '').trim().toUpperCase(),
+    p_no_gardu:            (p.noGardu||'').trim().toUpperCase(),
     p_ulp:                 ulpEnum,
     p_unitup:              p.unitup    || null,
     p_penyulang:           p.penyulang || null,
     p_alamat:              p.alamat    || null,
     p_kapasitas_kva:       p.daya      ? parseFloat(p.daya) : null,
-    p_tipe:                (p.tipe || 'PORTAL').toUpperCase(),
-    p_status_kepemilikan:  (p.kepemilikan || 'PLN').toUpperCase(),
-    p_status_operasional:  (p.statusOp || 'AKTIF').toUpperCase(),
+    p_tipe:                (p.tipe||'PORTAL').toUpperCase(),
+    p_status_kepemilikan:  (p.kepemilikan||'PLN').toUpperCase(),
+    p_status_operasional:  (p.statusOp||'AKTIF').toUpperCase(),
     p_merek_trafo:         p.merek     || null,
     p_latitude:            p.lat       ? String(p.lat) : null,
     p_longitude:           p.lng       ? String(p.lng) : null,
-    p_keterangan:          p.keterangan || null
+    p_keterangan:          p.keterangan|| null
   }, signal);
   if (!res.ok) {
     var errText = await res.text().catch(function(){ return res.status; });
-    return { status: 'error', message: 'Gagal menambahkan gardu (' + res.status + '): ' + errText };
+    return { status:'error', message:'Gagal menambahkan gardu ('+res.status+'): '+errText };
   }
-  var raw = await res.json();
-  var data = parseRpcJson(raw);
+  var data = await res.json();
   if (!data || data.status !== 'ok')
-    return { status: 'error', message: (data && data.message) ? data.message : 'Gagal menambahkan gardu.' };
-  return { status: 'ok', message: data.message };
+    return { status:'error', message: (data && data.message) ? data.message : 'Gagal menambahkan gardu.' };
+  return { status:'ok', message: data.message };
 }
 
 // ── EDIT GARDU ───────────────────────────────────────────────
 async function _editGardu(p, signal) {
   var pinHash = await sha256(String(p.pin || '').trim());
   var ulpEnum = p.ulp
-    ? 'ULP ' + p.ulp.replace(/^ULP\s*/i, '').trim().toUpperCase()
+    ? 'ULP ' + p.ulp.replace(/^ULP\s*/i,'').trim().toUpperCase()
     : null;
+  var noGarduBaru = (p.noGarduBaru || '').trim().toUpperCase();
   var res = await sbRpc('fn_edit_gardu', {
     p_token:               p.token,
     p_pin_hash:            pinHash,
-    p_no_gardu_lama:       (p.noGarduLama || '').trim().toUpperCase(),
-    p_no_gardu_baru:       p.noGarduBaru ? (p.noGarduBaru || '').trim().toUpperCase() : null,
+    p_no_gardu_lama:       (p.noGarduLama||'').trim().toUpperCase(),
+    p_no_gardu_baru:       noGarduBaru || null,
     p_ulp:                 ulpEnum,
     p_unitup:              p.unitup    || null,
     p_penyulang:           p.penyulang || null,
     p_alamat:              p.alamat    || null,
     p_kapasitas_kva:       p.daya      ? parseFloat(p.daya) : null,
-    p_tipe:                p.tipe      ? p.tipe.toUpperCase() : null,
+    p_tipe:                p.tipe      ? p.tipe.toUpperCase()          : null,
     p_status_kepemilikan:  p.kepemilikan ? p.kepemilikan.toUpperCase() : null,
-    p_status_operasional:  p.status    ? p.status.toUpperCase() : null,
+    p_status_operasional:  p.status    ? p.status.toUpperCase()        : null,
     p_merek_trafo:         p.merek     || null,
     p_latitude:            p.lat       ? String(p.lat) : null,
     p_longitude:           p.lng       ? String(p.lng) : null,
-    p_keterangan:          p.keterangan || null
+    p_keterangan:          p.keterangan|| null
   }, signal);
   if (!res.ok) {
     var errText = await res.text().catch(function(){ return res.status; });
-    return { status: 'error', message: 'Gagal menyimpan perubahan (' + res.status + '): ' + errText };
+    return { status:'error', message:'Gagal menyimpan perubahan ('+res.status+'): '+errText };
   }
-  var raw = await res.json();
-  var data = parseRpcJson(raw);
+  var data = await res.json();
   if (!data || data.status !== 'ok')
-    return { status: 'error', message: (data && data.message) ? data.message : 'Gagal menyimpan perubahan.' };
-  return { status: 'ok', message: data.message };
+    return { status:'error', message: (data && data.message) ? data.message : 'Gagal menyimpan perubahan.' };
+  return { status:'ok', message: data.message };
 }
 
 // ── DAFTAR USER ──────────────────────────────────────────────
 async function _getDaftarUser(p, signal) {
   var session = await _getUserFromToken(p.token);
   if (!session || session.role !== 'superadmin')
-    return { status: 'error', message: 'Akses ditolak.' };
+    return { status:'error', message:'Akses ditolak.' };
   var res = await sbRpc('fn_get_daftar_user', { p_token: p.token }, signal);
-  if (!res.ok) return { status: 'error', message: 'Gagal memuat daftar user.' };
-  var raw = await res.json();
-  var data = parseRpcJson(raw);
+  if (!res.ok) return { status:'error', message:'Gagal memuat daftar user.' };
+  var data = await res.json();
   if (!data || data.status !== 'ok')
-    return { status: 'error', message: (data && data.message) || 'Gagal.' };
-  return { status: 'ok', data: data.rows || [] };
+    return { status:'error', message: (data && data.message) || 'Gagal.' };
+  return { status:'ok', data: data.rows || [] };
 }
 
 // ── HAPUS USER ───────────────────────────────────────────────
 async function _hapusUser(p, signal) {
   var session = await _getUserFromToken(p.token);
   if (!session || session.role !== 'superadmin')
-    return { status: 'error', message: 'Akses ditolak.' };
+    return { status:'error', message:'Akses ditolak.' };
   var res = await sbRpc('fn_hapus_user', {
     p_token:    p.token,
     p_username: p.username
   }, signal);
-  if (!res.ok) return { status: 'error', message: 'Gagal menghapus user.' };
-  var raw = await res.json();
-  var data = parseRpcJson(raw);
+  if (!res.ok) return { status:'error', message:'Gagal menghapus user.' };
+  var data = await res.json();
   if (!data || data.status !== 'ok')
-    return { status: 'error', message: (data && data.message) || 'Gagal menghapus.' };
-  return { status: 'ok', message: data.message };
+    return { status:'error', message: (data && data.message) || 'Gagal menghapus.' };
+  return { status:'ok', message: data.message };
 }
 
 // ── CARI GARDU ───────────────────────────────────────────────
 async function _cariGardu(p, signal) {
-  var kw = (p.keyword || '').trim().toUpperCase();
-  var url = '/rest/v1/gardu?or=(no_gardu.ilike.*' + encodeURIComponent(kw) + '*,penyulang.ilike.*' + encodeURIComponent(kw) + '*)&limit=10';
-  var res = await sbFetch(url, { signal: signal });
-  if (!res.ok) return { status: 'error', message: 'Gagal mencari gardu.' };
+  var kw = (p.keyword||'').trim().toUpperCase();
+  var url = '/rest/v1/gardu?or=(no_gardu.ilike.*'+encodeURIComponent(kw)+'*,penyulang.ilike.*'+encodeURIComponent(kw)+'*)&limit=10';
+  var res = await sbFetch(url, { signal:signal });
+  if (!res.ok) return { status:'error', message:'Gagal mencari gardu.' };
   var rows = await res.json();
-  return { status: 'ok', data: rows.map(_mapGarduRow) };
+  return { status:'ok', data: rows.map(_mapGarduRow) };
 }
 
 // ── HELPER: Map row gardu ────────────────────────────────────
@@ -746,7 +678,7 @@ function _mapGarduRow(g) {
 function _mapInspeksiRow(r) {
   var flat = {
     'TGLUKUR':       r.tgl_ukur   || '',
-    'JAM UKUR':      r.jam_ukur   ? String(r.jam_ukur).slice(0, 5) : '',
+    'JAM UKUR':      r.jam_ukur   ? String(r.jam_ukur).slice(0,5) : '',
     'PETUGAS':       r.petugas    || '',
     'DAYA':          r.daya       != null ? String(r.daya)       : '',
     'FASA':          r.fasa       != null ? String(r.fasa)       : '',
@@ -776,29 +708,29 @@ function _mapInspeksiRow(r) {
   };
 
   var jurusan = [];
-  try { jurusan = typeof r.jurusan === 'string' ? JSON.parse(r.jurusan) : (r.jurusan || []); } catch(e) {}
-  jurusan.forEach(function(j, idx) {
+  try { jurusan = typeof r.jurusan === 'string' ? JSON.parse(r.jurusan) : (r.jurusan || []); } catch(e){}
+  jurusan.forEach(function(j, idx){
     var n = idx + 1;
-    flat['JURUSAN ' + n]       = j.nama    || '';
-    flat['JUR' + n + '_R TOTAL'] = j.r_total  != null ? String(j.r_total)  : '';
-    flat['JUR' + n + '_S TOTAL'] = j.s_total  != null ? String(j.s_total)  : '';
-    flat['JUR' + n + '_T TOTAL'] = j.t_total  != null ? String(j.t_total)  : '';
-    flat['JUR' + n + '_N TOTAL'] = j.n_total  != null ? String(j.n_total)  : '';
-    flat['JUR' + n + '_R - N']   = j.v_r_n    != null ? String(j.v_r_n)    : '';
-    flat['JUR' + n + '_S - N']   = j.v_s_n    != null ? String(j.v_s_n)    : '';
-    flat['JUR' + n + '_T - N']   = j.v_t_n    != null ? String(j.v_t_n)    : '';
-    flat['JUR' + n + '_R - s']   = j.v_r_t    != null ? String(j.v_r_t)    : '';
-    flat['JUR' + n + '_R - T']   = j.v_r_t    != null ? String(j.v_r_t)    : '';
-    flat['JUR' + n + '_S - T']   = j.v_s_t    != null ? String(j.v_s_t)    : '';
-    flat['JUR' + n + '_THD-R']   = j.thd_r    != null ? String(j.thd_r)    : '';
-    flat['JUR' + n + '_THD-S']   = j.thd_s    != null ? String(j.thd_s)    : '';
-    flat['JUR' + n + '_THD-T']   = j.thd_t    != null ? String(j.thd_t)    : '';
-    flat['JUR' + n + '_IPEAK-R'] = j.ipeak_r  != null ? String(j.ipeak_r)  : '';
-    flat['JUR' + n + '_IPEAK-S'] = j.ipeak_s  != null ? String(j.ipeak_s)  : '';
-    flat['JUR' + n + '_IPEAK-T'] = j.ipeak_t  != null ? String(j.ipeak_t)  : '';
-    flat['JUR' + n + '_TPF-R']   = j.tpf_r    != null ? String(j.tpf_r)    : '';
-    flat['JUR' + n + '_TPF-S']   = j.tpf_s    != null ? String(j.tpf_s)    : '';
-    flat['JUR' + n + '_TPF-T']   = j.tpf_t    != null ? String(j.tpf_t)    : '';
+    flat['JURUSAN '+n]       = j.nama    || '';
+    flat['JUR'+n+'_R TOTAL'] = j.r_total  != null ? String(j.r_total)  : '';
+    flat['JUR'+n+'_S TOTAL'] = j.s_total  != null ? String(j.s_total)  : '';
+    flat['JUR'+n+'_T TOTAL'] = j.t_total  != null ? String(j.t_total)  : '';
+    flat['JUR'+n+'_N TOTAL'] = j.n_total  != null ? String(j.n_total)  : '';
+    flat['JUR'+n+'_R - N']   = j.v_r_n    != null ? String(j.v_r_n)    : '';
+    flat['JUR'+n+'_S - N']   = j.v_s_n    != null ? String(j.v_s_n)    : '';
+    flat['JUR'+n+'_T - N']   = j.v_t_n    != null ? String(j.v_t_n)    : '';
+    flat['JUR'+n+'_R - s']   = j.v_r_t    != null ? String(j.v_r_t)    : '';
+    flat['JUR'+n+'_R - T']   = j.v_r_t    != null ? String(j.v_r_t)    : '';
+    flat['JUR'+n+'_S - T']   = j.v_s_t    != null ? String(j.v_s_t)    : '';
+    flat['JUR'+n+'_THD-R']   = j.thd_r    != null ? String(j.thd_r)    : '';
+    flat['JUR'+n+'_THD-S']   = j.thd_s    != null ? String(j.thd_s)    : '';
+    flat['JUR'+n+'_THD-T']   = j.thd_t    != null ? String(j.thd_t)    : '';
+    flat['JUR'+n+'_IPEAK-R'] = j.ipeak_r  != null ? String(j.ipeak_r)  : '';
+    flat['JUR'+n+'_IPEAK-S'] = j.ipeak_s  != null ? String(j.ipeak_s)  : '';
+    flat['JUR'+n+'_IPEAK-T'] = j.ipeak_t  != null ? String(j.ipeak_t)  : '';
+    flat['JUR'+n+'_TPF-R']   = j.tpf_r    != null ? String(j.tpf_r)    : '';
+    flat['JUR'+n+'_TPF-S']   = j.tpf_s    != null ? String(j.tpf_s)    : '';
+    flat['JUR'+n+'_TPF-T']   = j.tpf_t    != null ? String(j.tpf_t)    : '';
   });
 
   return flat;
@@ -806,7 +738,7 @@ function _mapInspeksiRow(r) {
 
 // ── LOGOUT ───────────────────────────────────────────────────
 async function _logoutUser(p, signal) {
-  return { status: 'ok', message: 'Logout berhasil.' };
+  return { status:'ok', message:'Logout berhasil.' };
 }
 
 // ── RIWAYAT INSPEKSI ─────────────────────────────────────────
@@ -817,30 +749,30 @@ async function _getRiwayat(p, signal) {
     '&order=tgl_ukur.desc,jam_ukur.desc&limit=50',
     { signal: signal }
   );
-  if (!res.ok) return { status: 'error', message: 'Gagal memuat riwayat inspeksi.' };
+  if (!res.ok) return { status:'error', message:'Gagal memuat riwayat inspeksi.' };
   var rows = await res.json();
-  return { status: 'ok', data: rows.map(_mapInspeksiRow) };
+  return { status:'ok', data: rows.map(_mapInspeksiRow) };
 }
 
 // ── REKAP GARDU SEDERHANA ────────────────────────────────────
 async function _getRekapGardu(p, signal) {
   var url = '/rest/v1/gardu?select=no_gardu,ulp,unitup,penyulang,status_operasional,status_kepemilikan,tipe,kapasitas_kva&order=ulp.asc,no_gardu.asc';
   if (p && p.ulp) url += '&ulp=eq.' + encodeURIComponent(p.ulp);
-  var res = await sbFetch(url, { signal: signal });
-  if (!res.ok) return { status: 'error', message: 'Gagal memuat rekap gardu.' };
+  var res = await sbFetch(url, { signal:signal });
+  if (!res.ok) return { status:'error', message:'Gagal memuat rekap gardu.' };
   var rows = await res.json();
   return {
     status: 'ok',
-    data: rows.map(function(g) {
+    data: rows.map(function(g){
       return {
-        noGardu:     g.no_gardu || '',
-        ulp:         g.ulp || '',
-        unitup:      g.unitup || '',
-        penyulang:   g.penyulang || '',
-        statusOp:    g.status_operasional || '',
-        kepemilikan: g.status_kepemilikan || '',
-        tipe:        g.tipe || '',
-        daya:        g.kapasitas_kva || ''
+        noGardu:    g.no_gardu || '',
+        ulp:        g.ulp || '',
+        unitup:     g.unitup || '',
+        penyulang:  g.penyulang || '',
+        statusOp:   g.status_operasional || '',
+        kepemilikan:g.status_kepemilikan || '',
+        tipe:       g.tipe || '',
+        daya:       g.kapasitas_kva || ''
       };
     })
   };
@@ -850,29 +782,28 @@ async function _getRekapGardu(p, signal) {
 async function _tambahUser(p, signal) {
   var session = await _getUserFromToken(p.token);
   if (!session || session.role !== 'superadmin')
-    return { status: 'error', message: 'Akses ditolak.' };
+    return { status:'error', message:'Akses ditolak.' };
   var pwHash = await sha256(String(p.password || '').trim());
   var res = await sbRpc('fn_tambah_user', {
     p_token:         p.token,
-    p_username:      (p.username || '').trim().toLowerCase(),
+    p_username:      (p.username||'').trim().toLowerCase(),
     p_password_hash: pwHash,
     p_nama:          p.nama || '',
     p_role:          p.role || 'petugas',
     p_ulp:           p.ulp  || null
   }, signal);
-  if (!res.ok) { var t = await res.text(); return { status: 'error', message: 'Gagal tambah user. ' + t }; }
-  var raw = await res.json();
-  var data = parseRpcJson(raw);
+  if (!res.ok) { var t=await res.text(); return { status:'error', message:'Gagal tambah user. '+t }; }
+  var data = await res.json();
   if (!data || data.status !== 'ok')
-    return { status: 'error', message: (data && data.message) || 'Gagal tambah user.' };
-  return { status: 'ok', message: data.message };
+    return { status:'error', message: (data && data.message) || 'Gagal tambah user.' };
+  return { status:'ok', message: data.message };
 }
 
 // ── EDIT USER ────────────────────────────────────────────────
 async function _editUser(p, signal) {
   var session = await _getUserFromToken(p.token);
   if (!session || session.role !== 'superadmin')
-    return { status: 'error', message: 'Akses ditolak.' };
+    return { status:'error', message:'Akses ditolak.' };
   var pwHash = (p.password && String(p.password).trim().length >= 4)
     ? await sha256(String(p.password).trim())
     : null;
@@ -884,62 +815,58 @@ async function _editUser(p, signal) {
     p_ulp:           p.ulp !== undefined ? (p.ulp || null) : null,
     p_password_hash: pwHash
   }, signal);
-  if (!res.ok) { var t = await res.text(); return { status: 'error', message: 'Gagal edit user. ' + t }; }
-  var raw = await res.json();
-  var data = parseRpcJson(raw);
+  if (!res.ok) { var t=await res.text(); return { status:'error', message:'Gagal edit user. '+t }; }
+  var data = await res.json();
   if (!data || data.status !== 'ok')
-    return { status: 'error', message: (data && data.message) || 'Gagal edit user.' };
-  return { status: 'ok', message: data.message };
+    return { status:'error', message: (data && data.message) || 'Gagal edit user.' };
+  return { status:'ok', message: data.message };
 }
 
 // ── GANTI PASSWORD ───────────────────────────────────────────
 async function _gantiPassword(p, signal) {
-  var oldHash = await sha256(String(p.passwordLama || '').trim());
-  var newHash = await sha256(String(p.passwordBaru || '').trim());
+  var oldHash = await sha256(String(p.passwordLama||'').trim());
+  var newHash = await sha256(String(p.passwordBaru||'').trim());
   var res = await sbRpc('fn_ganti_password', {
     p_token:              p.token,
     p_password_hash_lama: oldHash,
     p_password_hash_baru: newHash
   }, signal);
-  if (!res.ok) return { status: 'error', message: 'Gagal mengubah password.' };
-  var raw = await res.json();
-  var data = parseRpcJson(raw);
+  if (!res.ok) return { status:'error', message:'Gagal mengubah password.' };
+  var data = await res.json();
   if (!data || data.status !== 'ok')
-    return { status: 'error', message: (data && data.message) || 'Gagal mengubah password.' };
-  return { status: 'ok', message: data.message };
+    return { status:'error', message: (data && data.message) || 'Gagal mengubah password.' };
+  return { status:'ok', message: data.message };
 }
 
 // ── VERIFY ULP PIN ───────────────────────────────────────────
 async function _verifyULPPin(p, signal) {
-  var pinHash   = await sha256(String(p.pin || '').trim());
-  var ulpTarget = (p.ulp || '').trim().toUpperCase();
+  var pinHash   = await sha256(String(p.pin||'').trim());
+  var ulpTarget = (p.ulp||'').trim().toUpperCase();
   var res = await sbRpc('fn_verify_ulp_pin', {
     p_pin_hash:   pinHash,
     p_ulp_target: ulpTarget
   }, signal);
-  if (!res.ok) return { status: 'error', message: 'Gagal verifikasi PIN.' };
-  var raw = await res.json();
-  var data = parseRpcJson(raw);
+  if (!res.ok) return { status:'error', message:'Gagal verifikasi PIN.' };
+  var data = await res.json();
   if (!data || data.status !== 'ok')
-    return { status: 'error', message: (data && data.message) || 'PIN salah.' };
-  return { status: 'ok', role: data.role, ulp: data.ulp };
+    return { status:'error', message: (data && data.message) || 'PIN salah.' };
+  return { status:'ok', role: data.role, ulp: data.ulp };
 }
 
 // ── TOGGLE STATUS GARDU ──────────────────────────────────────
 async function _toggleStatus(p, signal) {
   var session = await _getUserFromToken(p.token);
-  if (!session) return { status: 'error', message: 'Sesi tidak valid.' };
+  if (!session) return { status:'error', message:'Sesi tidak valid.' };
   var res = await sbRpc('fn_toggle_status_gardu', {
     p_token:    p.token,
     p_no_gardu: p.noGardu,
-    p_status:   (p.status || 'AKTIF').toUpperCase()
+    p_status:   (p.status||'AKTIF').toUpperCase()
   }, signal);
-  if (!res.ok) return { status: 'error', message: 'Gagal mengubah status gardu.' };
-  var raw = await res.json();
-  var data = parseRpcJson(raw);
+  if (!res.ok) return { status:'error', message:'Gagal mengubah status gardu.' };
+  var data = await res.json();
   if (!data || data.status !== 'ok')
-    return { status: 'error', message: (data && data.message) || 'Gagal.' };
-  return { status: 'ok', message: data.message };
+    return { status:'error', message: (data && data.message) || 'Gagal.' };
+  return { status:'ok', message: data.message };
 }
 
 // ── Override apiGet global ────────────────────────────────────
@@ -951,5 +878,4 @@ window.apiGet = function(params, cb) {
 };
 
 window._sbApiReady = true;
-console.log('[Supabase API v8] Layer aktif. URL:', SUPABASE_URL);
-console.log('[Supabase API v8] getGarduKritis: query langsung ke v_gardu_lengkap (no RPC loop).');
+console.log('[Supabase API v6] Layer aktif. URL:', SUPABASE_URL);
